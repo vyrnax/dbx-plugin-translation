@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>翻译助手</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ===== 顶部工具栏 ===== -->
+    <header id="topbar">
+      <div class="brand">
+        <svg id="brand-logo" width="22" height="22" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <defs><linearGradient id="brandg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4f7cff"/><stop offset="1" stop-color="#2f49d8"/></linearGradient></defs>
+          <rect x="8" y="8" width="112" height="112" rx="24" fill="url(#brandg)"/>
+          <g stroke="#ffffff" stroke-width="6" stroke-linecap="round" fill="none">
+            <path d="M30 40 h26"/><path d="M43 34 v8"/><path d="M43 48 L31 74"/><path d="M43 48 L55 74"/>
+          </g>
+          <g stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none">
+            <path d="M78 92 L88 62 L98 92"/><path d="M82 82 h12"/>
+          </g>
+          <g stroke="#a8c0ff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none">
+            <path d="M62 52 h16"/><path d="M74 46 l6 6 l-6 6"/><path d="M86 76 h-16"/><path d="M74 70 l-6 6 l6 6"/>
+          </g>
+        </svg>
+        <span class="brand-name" data-i18n="appTitle">翻译助手</span>
+      </div>
+
+      <!-- 视图切换 -->
+      <div class="view-toggle" role="tablist" aria-label="视图切换">
+        <button id="btn-view-translate" class="vt-btn active" type="button" role="tab" aria-selected="true" data-i18n="viewTranslate">翻译</button>
+        <button id="btn-view-engines" class="vt-btn" type="button" role="tab" aria-selected="false" data-i18n="viewEngines">引擎</button>
+        <button id="btn-view-history" class="vt-btn" type="button" role="tab" aria-selected="false" data-i18n="viewHistory">历史</button>
+        <button id="btn-view-settings" class="vt-btn" type="button" role="tab" aria-selected="false" data-i18n="viewSettings">设置</button>
+      </div>
+
+      <div class="topbar-actions">
+        <span id="engine-badge" class="engine-badge" title="当前默认引擎">—</span>
+        <div class="more-wrap">
+          <button id="btn-more" class="ghost" type="button" aria-haspopup="true" aria-expanded="false">⋯</button>
+          <div id="more-menu" class="more-menu" hidden>
+            <button id="btn-swap-lang" class="menu-item" type="button" data-i18n="swapLang">交换语言方向</button>
+            <button id="btn-export" class="menu-item" type="button" data-i18n="exportData">导出数据…</button>
+            <button id="btn-import" class="menu-item" type="button" data-i18n="importData">导入数据…</button>
+            <button id="btn-diag" class="menu-item" type="button" data-i18n="showDiag">查看诊断报告</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ===== 全局警示条 ===== -->
+    <!-- 未持久化：侧车或数据库不可用，数据只存在内存里，刷新即丢 -->
+    <div id="banner-not-persistent" class="banner banner-danger" hidden>
+      <span class="banner-icon">⚠</span>
+      <span id="banner-not-persistent-text" class="banner-text">数据未持久化</span>
+      <button id="btn-banner-retry" class="banner-btn" type="button" data-i18n="retry">重试连接</button>
+    </div>
+    <!-- 密钥仅混淆保护：系统密钥库不可用，降级为机器绑定 AES-GCM -->
+    <div id="banner-insecure-secret" class="banner banner-warn" hidden>
+      <span class="banner-icon">🔓</span>
+      <span id="banner-insecure-secret-text" class="banner-text">系统密钥库不可用，API Key 仅以机器绑定方式混淆存储，安全性降低</span>
+    </div>
+
+    <!-- ===== 主体 ===== -->
+    <main id="main">
+
+      <!-- ---------- 翻译视图 ---------- -->
+      <section id="view-translate" class="view">
+        <div class="translate-toolbar">
+          <div class="lang-picker">
+            <select id="sel-source-lang" class="select" aria-label="源语言"></select>
+            <button id="btn-swap" class="icon-btn" type="button" title="交换语言方向">⇄</button>
+            <select id="sel-target-lang" class="select" aria-label="目标语言"></select>
+          </div>
+          <div class="engine-picker">
+            <label for="sel-engine" class="picker-label" data-i18n="engine">引擎</label>
+            <select id="sel-engine" class="select" aria-label="翻译引擎"></select>
+            <button id="btn-manage-engines" class="ghost sm" type="button" data-i18n="manage">管理</button>
+          </div>
+          <div class="translate-options">
+            <label class="checkbox-label" title="输入停顿后自动翻译">
+              <input id="chk-instant" type="checkbox" />
+              <span data-i18n="instant">输入即译</span>
+            </label>
+            <label class="checkbox-label" title="逐字显示译文（引擎支持时）">
+              <input id="chk-stream" type="checkbox" />
+              <span data-i18n="stream">流式输出</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="translate-panes">
+          <!-- 源文 -->
+          <div class="pane">
+            <div class="pane-head">
+              <span class="pane-title" data-i18n="sourceText">原文</span>
+              <span id="src-count" class="pane-count">0</span>
+              <span class="pane-spacer"></span>
+              <button id="btn-paste" class="ghost sm" type="button" data-i18n="paste">粘贴</button>
+              <button id="btn-clear-src" class="ghost sm" type="button" data-i18n="clear">清空</button>
+            </div>
+            <textarea id="src-text" class="textarea" rows="12"
+                      placeholder="在此输入或粘贴要翻译的文本…"
+                      data-i18n-placeholder="sourcePlaceholder"
+                      spellcheck="false"></textarea>
+          </div>
+
+          <!-- 译文 -->
+          <div class="pane">
+            <div class="pane-head">
+              <span class="pane-title" data-i18n="targetText">译文</span>
+              <span id="dst-count" class="pane-count">0</span>
+              <span id="translate-meta" class="pane-meta"></span>
+              <span class="pane-spacer"></span>
+              <button id="btn-cancel" class="ghost sm danger-text" type="button" hidden data-i18n="cancel">取消</button>
+              <button id="btn-copy-dst" class="ghost sm" type="button" data-i18n="copy">复制</button>
+              <button id="btn-clear-dst" class="ghost sm" type="button" data-i18n="clear">清空</button>
+            </div>
+            <div id="dst-wrap" class="dst-wrap">
+              <pre id="dst-text" class="dst-text" aria-live="polite"></pre>
+              <span id="dst-cursor" class="dst-cursor" hidden></span>
+              <div id="dst-empty" class="dst-empty" data-i18n="dstEmpty">译文将显示在这里</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="translate-actions">
+          <span id="translate-hint" class="hint"></span>
+          <span class="pane-spacer"></span>
+          <button id="btn-translate" class="primary" type="button" data-i18n="translate">翻译</button>
+        </div>
+
+        <!-- 无引擎时的引导 -->
+        <div id="no-engine" class="empty-state" hidden>
+          <div class="empty-icon">🌐</div>
+          <div class="empty-title" data-i18n="noEngineTitle">还没有配置翻译引擎</div>
+          <div class="empty-desc" data-i18n="noEngineDesc">
+            添加一个引擎后即可开始翻译。支持 OpenAI 兼容大模型（DeepSeek、通义、Ollama 等）、
+            DeepL、百度、有道、阿里云，以及本地 CLI 代理。
+          </div>
+          <button id="btn-add-first-engine" class="primary" type="button" data-i18n="addEngine">添加引擎</button>
+        </div>
+      </section>
+
+      <!-- ---------- 引擎管理视图 ---------- -->
+      <section id="view-engines" class="view" hidden>
+        <div class="section-head">
+          <span class="section-title" data-i18n="engineList">引擎列表</span>
+          <span class="pane-spacer"></span>
+          <button id="btn-add-engine" class="primary sm" type="button" data-i18n="addEngine">+ 添加引擎</button>
+        </div>
+        <div id="engine-list" class="engine-list"></div>
+        <div id="engine-empty" class="empty-state" hidden>
+          <div class="empty-icon">⚙️</div>
+          <div class="empty-title" data-i18n="engineEmptyTitle">还没有引擎</div>
+          <div class="empty-desc" data-i18n="engineEmptyDesc">点击右上角「添加引擎」创建第一个翻译引擎。</div>
+        </div>
+      </section>
+
+      <!-- ---------- 历史视图 ---------- -->
+      <section id="view-history" class="view" hidden>
+        <div class="section-head">
+          <input id="history-search" class="input search" type="search"
+                 placeholder="搜索原文或译文…" data-i18n-placeholder="searchHistory" autocomplete="off" />
+          <div class="filter-chips" id="history-chips">
+            <button class="chip active" data-starred="all" type="button" data-i18n="all">全部</button>
+            <button class="chip" data-starred="yes" type="button" data-i18n="starred">已收藏</button>
+          </div>
+          <span class="pane-spacer"></span>
+          <span id="history-count" class="hint"></span>
+          <button id="btn-clear-history" class="ghost sm danger-text" type="button" data-i18n="clearHistory">清空历史</button>
+        </div>
+        <div id="history-list" class="history-list"></div>
+        <div id="history-empty" class="empty-state" hidden>
+          <div class="empty-icon">📜</div>
+          <div class="empty-title" data-i18n="historyEmptyTitle">还没有翻译记录</div>
+          <div class="empty-desc" data-i18n="historyEmptyDesc">翻译过的内容会自动保存在这里。</div>
+        </div>
+        <div id="history-pager" class="pager" hidden>
+          <button id="btn-history-prev" class="ghost sm" type="button" data-i18n="prevPage">上一页</button>
+          <span id="history-page-info" class="hint"></span>
+          <button id="btn-history-next" class="ghost sm" type="button" data-i18n="nextPage">下一页</button>
+        </div>
+      </section>
+
+      <!-- ---------- 设置视图 ---------- -->
+      <section id="view-settings" class="view" hidden>
+        <div class="section-head">
+          <span class="section-title" data-i18n="settings">设置</span>
+        </div>
+        <div class="settings-body">
+
+          <fieldset class="setting-group">
+            <legend data-i18n="groupInstant">输入即译</legend>
+            <label class="setting-row">
+              <span class="setting-label" data-i18n="instantEnabled">启用输入即译</span>
+              <input id="set-instant-enabled" type="checkbox" />
+            </label>
+            <label class="setting-row">
+              <span class="setting-label" data-i18n="instantDebounce">触发延迟（毫秒）</span>
+              <input id="set-instant-debounce" class="input num" type="number" min="200" max="3000" step="50" />
+            </label>
+            <label class="setting-row">
+              <span class="setting-label" data-i18n="instantMinChars">最少字符数</span>
+              <input id="set-instant-minchars" class="input num" type="number" min="1" max="100" step="1" />
+            </label>
+            <label class="setting-row">
+              <span class="setting-label" data-i18n="instantMaxLength">自动翻译长度上限</span>
+              <input id="set-instant-maxlength" class="input num" type="number" min="100" max="100000" step="100" />
+            </label>
+            <p class="setting-note" data-i18n="instantNote">超过长度上限时不会自动翻译，需手动点击「翻译」按钮。</p>
+          </fieldset>
+
+          <fieldset class="setting-group">
+            <legend data-i18n="groupTranslate">翻译行为</legend>
+            <label class="setting-row">
+              <span class="setting-label" data-i18n="streamEnabled">启用流式输出</span>
+              <input id="set-stream-enabled" type="checkbox" />
+            </label>
+            <label class="setting-row">
+              <span class="setting-label" data-i18n="chunkDelay">分段间隔（毫秒）</span>
+              <input id="set-chunk-delay" class="input num" type="number" min="0" max="10000" step="100" />
+            </label>
+            <p class="setting-note" data-i18n="chunkDelayNote">
+              长文本会被自动分段翻译。百度、有道等免费额度通常为 1 QPS，建议保持 1100 毫秒以上以避免触发限流。
+            </p>
+            <label class="setting-row">
+              <span class="setting-label" data-i18n="defaultSourceLang">默认源语言</span>
+              <select id="set-default-source" class="select"></select>
+            </label>
+            <label class="setting-row">
+              <span class="setting-label" data-i18n="defaultTargetLang">默认目标语言</span>
+              <select id="set-default-target" class="select"></select>
+            </label>
+          </fieldset>
+
+          <fieldset class="setting-group">
+            <legend data-i18n="groupHistory">历史</legend>
+            <label class="setting-row">
+              <span class="setting-label" data-i18n="historyLimit">保留条数上限</span>
+              <input id="set-history-limit" class="input num" type="number" min="100" max="5000" step="50" />
+            </label>
+            <p class="setting-note" data-i18n="historyLimitNote">超出上限时自动删除最旧的记录，已收藏的记录不会被删除。</p>
+          </fieldset>
+
+          <fieldset class="setting-group">
+            <legend data-i18n="groupData">数据与诊断</legend>
+            <div class="setting-row">
+              <span class="setting-label" data-i18n="dataDir">数据目录</span>
+              <code id="info-datadir" class="info-code">—</code>
+            </div>
+            <div class="setting-row">
+              <span class="setting-label" data-i18n="dbFile">数据库文件</span>
+              <code id="info-dbpath" class="info-code">—</code>
+            </div>
+            <div class="setting-row">
+              <span class="setting-label" data-i18n="sidecarVersion">侧车版本</span>
+              <code id="info-version" class="info-code">—</code>
+            </div>
+            <div class="setting-row">
+              <span class="setting-label" data-i18n="secretScheme">密钥保护方案</span>
+              <code id="info-secret" class="info-code">—</code>
+            </div>
+            <div class="setting-actions">
+              <button id="btn-settings-export" class="ghost sm" type="button" data-i18n="exportData">导出数据…</button>
+              <button id="btn-settings-import" class="ghost sm" type="button" data-i18n="importData">导入数据…</button>
+              <button id="btn-settings-diag" class="ghost sm" type="button" data-i18n="showDiag">诊断报告</button>
+              <button id="btn-reconnect" class="ghost sm" type="button" data-i18n="reconnect">重新连接侧车</button>
+            </div>
+          </fieldset>
+
+          <div class="settings-foot">
+            <button id="btn-save-settings" class="primary" type="button" data-i18n="saveSettings">保存设置</button>
+            <span id="settings-status" class="hint"></span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ===== 底部状态条 ===== -->
+    <footer id="statusbar" class="statusbar">
+      <span id="status-dot" class="status-dot"></span>
+      <span id="status-text" class="status-text" data-i18n="statusInit">初始化中…</span>
+      <span class="pane-spacer"></span>
+      <span id="status-version" class="status-version"></span>
+    </footer>
+
+    <!-- ===== 引擎编辑弹框 ===== -->
+    <div id="engine-modal" class="modal" hidden>
+      <div class="modal-backdrop" data-close="1"></div>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="engine-modal-title">
+        <div class="modal-head">
+          <h2 id="engine-modal-title" data-i18n="addEngine">添加引擎</h2>
+          <button id="btn-close-engine-modal" class="icon-btn" type="button" title="关闭">✕</button>
+        </div>
+        <div class="modal-body">
+          <!-- 引擎类型选择（新建时可选，编辑时锁定） -->
+          <div id="engine-kind-wrap" class="field">
+            <span class="field-label" data-i18n="engineType">引擎类型</span>
+            <select id="engine-kind" class="select"></select>
+            <p id="engine-kind-desc" class="field-desc"></p>
+          </div>
+          <!-- 动态字段容器：由 translate/schema 驱动渲染 -->
+          <div id="engine-fields" class="engine-fields"></div>
+          <div id="engine-form-error" class="form-error" hidden></div>
+        </div>
+        <div class="modal-foot">
+          <button id="btn-engine-test" class="outline" type="button" data-i18n="testConnection">测试连接</button>
+          <span class="pane-spacer"></span>
+          <button id="btn-engine-delete" class="danger" type="button" hidden data-i18n="delete">删除</button>
+          <button id="btn-engine-cancel" class="ghost" type="button" data-i18n="cancel">取消</button>
+          <button id="btn-engine-save" class="primary" type="button" data-i18n="save">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 通用确认弹框（沙箱里没有原生 confirm，必须自己实现）===== -->
+    <div id="confirm-modal" class="modal" hidden>
+      <div class="modal-backdrop"></div>
+      <div class="modal-card modal-sm" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <div class="modal-head">
+          <h2 id="confirm-title">确认</h2>
+        </div>
+        <div class="modal-body">
+          <div id="confirm-lines" class="confirm-lines"></div>
+        </div>
+        <div class="modal-foot">
+          <span class="pane-spacer"></span>
+          <button id="btn-confirm-no" class="ghost" type="button" data-i18n="cancel">取消</button>
+          <button id="btn-confirm-yes" class="danger" type="button" data-i18n="confirm">确定</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 诊断报告弹框 ===== -->
+    <div id="diag-modal" class="modal" hidden>
+      <div class="modal-backdrop" data-close="1"></div>
+      <div class="modal-card modal-lg" role="dialog" aria-modal="true" aria-labelledby="diag-title">
+        <div class="modal-head">
+          <h2 id="diag-title" data-i18n="diagTitle">诊断报告</h2>
+          <button id="btn-close-diag" class="icon-btn" type="button" title="关闭">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="field-desc" data-i18n="diagHint">
+            遇到问题时，复制下面的报告发给开发者。报告不含 API Key（已自动脱敏）。
+          </p>
+          <pre id="diag-content" class="diag-content"></pre>
+        </div>
+        <div class="modal-foot">
+          <span class="pane-spacer"></span>
+          <button id="btn-diag-copy" class="primary" type="button" data-i18n="copyReport">复制报告</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 轻提示 ===== -->
+    <div id="toast" class="toast" hidden></div>
+
+    <!-- ===== 导入文件选择（隐藏）===== -->
+    <input id="file-input" type="file" accept="application/json,.json" hidden />
+  </div>
+
+  <script src="storage.js"></script>
+  <script src="i18n.js"></script>
+  <script src="engines.js"></script>
+  <script src="history.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

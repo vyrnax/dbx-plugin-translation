@@ -1,0 +1,24 @@
+# 统一使用 LF 换行符。
+#
+# 为什么必须显式声明：
+#   Windows 上 git 的 core.autocrlf 默认会把 LF 转成 CRLF 检出，
+#   而 gofmt 与本项目所有写入代码都用 LF。不统一的话会出现
+#   「本地 gofmt 通过、CI 上 diff 出满屏换行符差异」这类噪音，
+#   更糟的是 .dbxp 打包时 checksums 会因换行符不同而变化，
+#   导致同一个 commit 在不同机器上打出 sha256 不同的包。
+#
+#   打包产物必须字节级可重现，因此换行符不能交给平台决定。
+* text=auto eol=lf
+
+# 二进制文件：绝不做换行符转换
+*.png binary
+*.ico binary
+*.dbxp binary
+*.exe binary
+*.db binary
+*.db-wal binary
+*.db-shm binary
+
+# Go 源码强制 LF（gofmt 的约定）
+*.go text eol=lf
+go.sum text eol=lf

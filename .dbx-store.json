@@ -1,0 +1,11 @@
+{
+  "name": "翻译助手",
+  "description": "多引擎翻译插件：支持 OpenAI 兼容大模型、DeepL、百度、有道、阿里云与本地 CLI 代理，含流式输出、输入即译、引擎管理与翻译历史。API Key 由侧车经系统密钥库加密保管。",
+  "tags": ["translation", "translate", "i18n", "llm", "deepl", "productivity"],
+  "icon": "assets/plugin.svg",
+  "permissions": ["host.events"],
+  "source": "https://github.com/Gaogao105/dbx-plugin-translation",
+  "homepage": "https://github.com/Gaogao105/dbx-plugin-translation",
+  "license": "Apache-2.0",
+  "releaseNotes": "首个版本：OpenAI 兼容引擎全链路（流式 + 输入即译 + 引擎管理 + 翻译历史）。"
+}

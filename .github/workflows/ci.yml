@@ -1,0 +1,124 @@
+# CI：单元测试 + 竞态检查 + 静态闸门 + 端到端 + 多平台打包校验
+#
+# 为什么 -race 必须在 CI 上跑而不是本机：
+#   go test -race 需要 cgo，而 cgo 需要 C 编译器（gcc/clang）。
+#   本插件的侧车【刻意保持无 cgo】以便在 Windows 上交叉编译出 darwin/linux 包，
+#   开发机（Windows + MSVC）也没有 gcc。Linux runner 上 gcc 是现成的，
+#   因此把 -race 放到 CI —— 这既满足了并发安全检查，
+#   又不破坏「产物无 cgo」这个交叉编译的前提。
+#
+#   注意：-race 只用于【测试】，发布产物始终用 CGO_ENABLED=0 构建。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 单元测试与竞态检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache-dependency-path: backend/go.sum
+
+      - name: gofmt 检查（应无输出）
+        run: |
+          cd backend
+          # 排除 vendor 的 dbxsdk：它是上游文件的字节级复制，不允许被本地格式化改动
+          files=$(find . -name '*.go' -not -path './dbxsdk/*')
+          out=$(gofmt -l $files)
+          if [ -n "$out" ]; then echo "以下文件未格式化:"; echo "$out"; exit 1; fi
+          echo "gofmt OK"
+
+      - name: go vet
+        run: go vet -C backend ./...
+
+      - name: 单元测试
+        run: go test -C backend ./...
+
+      - name: 竞态检查（-race，需要 cgo）
+        run: go test -C backend -race ./...
+        env:
+          CGO_ENABLED: "1"
+
+  e2e:
+    name: 前端闸门与侧车端到端
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache-dependency-path: backend/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 前端静态闸门
+        run: python _domcheck.py
+
+      - name: 编译侧车（Linux，无 cgo）
+        run: |
+          cd backend
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o dbx-plugin-translation .
+
+      - name: 侧车协议端到端测试
+        run: node _e2e.mjs ./backend/dbx-plugin-translation
+
+      - name: 密钥泄露审计（trace 日志与数据库）
+        run: |
+          # e2e 跑完后临时目录已清理，这里再单独跑一次并保留产物做审计
+          node _e2e.mjs ./backend/dbx-plugin-translation || true
+          if [ -d _e2e_tmp ]; then
+            if grep -rq "sk-e2e-FAKEKEY" _e2e_tmp/ 2>/dev/null; then
+              echo "[FATAL] 临时目录中发现测试密钥明文"
+              exit 1
+            fi
+            echo "密钥泄露审计通过"
+          fi
+
+  package:
+    name: 多平台打包与校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache-dependency-path: backend/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 在 Linux 上构建全部平台：Go 交叉编译不需要目标平台的工具链。
+      # windows-x64 的包在这里也能产出（只是侧车探针会标 SKIP，因为跑不了 exe）。
+      - name: 交叉编译 + 打包 + 校验
+        run: node _release.mjs
+
+      - name: 列出产物
+        run: ls -lh dist/
+
+      - name: 上传候选包
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbxp-candidates
+          path: |
+            dist/*.dbxp
+            dist/*.artifact.json
+            dist/release-candidates.json
+          retention-days: 14
