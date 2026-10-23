@@ -48,7 +48,6 @@
     {
       "type": "menus",
       "id": "com.gaogao.translation.menus.main",
-      "label": "Translation 即时翻译",
       "items": [
         {
           "location": "appToolbar",
@@ -78,9 +77,6 @@
         "com.gaogao.translation.cmd.main": {
           "label": "Translation",
           "description": "Open the translation workbench"
-        },
-        "com.gaogao.translation.menus.main": {
-          "label": "Translation"
         }
       }
     }

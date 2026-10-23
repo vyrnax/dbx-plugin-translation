@@ -271,9 +271,45 @@ if ((mani.permissions || []).indexOf("host.ai") >= 0) {
 - `menus` 每项的 `command` 必须引用已声明的 command id
 - `menus` 每项的 `location` 只能是 `commandPalette` / `appToolbar` / `appSidebar`
 
-### 铁律 12：`localizations` 的键必须对上真实贡献点 id
+### 铁律 12：manifest 的每个对象都是 `additionalProperties: false`
+
+**多写一个字段，宿主就在安装阶段直接拒绝整个包**，报错形如：
+
+```
+Failed to parse plugin manifest: unknown field `label`,
+expected `id` or `items` at line 68 column 3
+```
+
+这类错误在打包阶段完全看不出来（zip 打得出来、checksums 也算得对），只有安装时才炸，而且**报错只指出第一个问题** —— 修一个再装一次，逐个试错非常费时。
+
+各贡献点允许的字段（抄自官方 `manifest.schema.json` 的 `$defs`）：
+
+| type | 允许的字段 |
+|---|---|
+| `workbench` | `type` `id` `label` `description` `icon` `ai` |
+| `command` | `type` `id` `label` `description` `icon` `action` `enablement` |
+| **`menus`** | **只有 `type` `id` `items`** —— 没有 `label`！ |
+| `context-menu` | `type` `id` `label` `description` `icon` `menu` `dynamic` `action` |
+| `result-view` | `type` `id` `label` `description` `icon` |
+| `connection-provider` | `type` `id` `label` `icon` `database_type` `description` `fields` `workbench` `filesystem_provider` `capabilities` `proxy_route` `actions` |
+| `filesystem-provider` | `type` `id` `label` `description` `icon` `schemes` `root_uri` `capabilities` |
+| `mcp` | `type` `id` `description` `ai_tools` `external_tools` |
+
+`menuItem` 的必填字段是 `location` `command` `group` `order`（**四个都必填**），可选 `default_visible` `when`。
+
+**对策**：`_buildpkg.js` 内置了完整的 schema 字段白名单闸门，打包前一次性校验全部字段、必填项、格式、权限枚举与 locale 键，把所有问题一次报完。白名单来源：
+
+```
+https://raw.githubusercontent.com/t8y2/dbx/main/plugins/manifest.schema.json
+```
+
+升级 DBX 后应重新拉取比对一次。
+
+### 铁律 12b：`localizations` 的键必须对上真实贡献点 id，且不含死条目
 
 宿主会把对不上的键判为**无效清单**。每加/删一个贡献点，必须同步更新 `localizations`。
+
+反向也要检查：**不该为没有可本地化文案的贡献点写本地化条目**。`menus` 贡献点没有 `label`/`description`，为它写 `localizations.en.contributions.<menus-id>.label` 是死配置（本项目踩过）。
 
 ### 铁律 13：`.dbx-store.json` 的 `name` / `permissions` 必须与 manifest 一致
 
@@ -609,12 +645,18 @@ var RPC_TIMEOUT = 30000, READY_TIMEOUT = 8000, CTX_TIMEOUT = 2500,
 | `_buildpkg.js` 报 `SyntaxError: Invalid or unexpected token` | 给 JS 文件加注释时误用了 Python 的 `#`（批量改两个闸门脚本时复制粘贴串了） | JS 用 `//`、Python 用 `#`；改完立刻 `node --check` 验语法，别等到打包才发现 |
 | 开发宿主里字体跟随测不出来 | 开发宿主只投递 15 个 token（`--color-*` + `--radius-*`），**不含 `--font-*`**（已实测确认） | 字体跟随只能在桌面端验证；CSS 必须用 `var(--font-sans, 兜底栈)` 形式，保证宿主没投递时仍走兜底而不是退化成衬线体 |
 
+| 安装失败：`unknown field \`label\`, expected \`id\` or \`items\`` | 给 `menus` 贡献点加了 `label`，但官方 schema 的 `menusContribution` 只允许 `type`/`id`/`items` 且 `additionalProperties:false` | 移除该字段；`_buildpkg.js` 加完整 schema 字段白名单闸门，打包前一次报完所有问题（宿主只报第一个） |
+| `localizations` 里给 menus 本地化 label 是死配置 | menus 没有 label 字段，本地化条目无处生效 | 只为「有 `label`/`description` 的贡献点」要求本地化覆盖；反向加死条目闸门 |
+| `_buildpkg.js` 报 `Invalid regular expression: Unterminated group` | 正则**字面量**里出现裸 `/`（如 `https://`、`(?!.*//)`）会提前终止字面量 | 含 `/` 的 pattern 一律用 `new RegExp("字符串")`，字符串里只需按普通规则转义一次 |
+
 **从这些坑里提炼的两条通用规则**（已并入铁律）：
 
 - **静态闸门的判据必须在 `_buildpkg.js` 与 `_verify.mjs` 之间保持一致**，且都要先剥离注释再扫描。两份闸门判据不一致会产生「本地打包通过、校验失败」的困惑。
 - **凡是「时好时坏」的断言，先怀疑 WAL / 缓存 / 异步时序**。数据库内容检查要覆盖 WAL 文件；异步协议测试要用轮询等待而非固定 sleep。
 - **「跟随宿主」类功能必须在桌面端验证，开发宿主测不出来**。开发宿主与桌面端在事件 target、token 投递范围上都有差异（env 事件冒泡行为、`--font-*` 是否投递）。凡是依赖宿主投递内容的功能，都要在 `_verify.mjs` 里加静态校验作为替代防线。
 - **映射/别名类代码必须双向校验**：既校验「源存在」，也校验「目标被真实消费」。只写映射不核对目标，会产生「代码看起来对、界面就是不变」的静默失效。
+- **凡是「宿主只在某个阶段才校验」的契约，必须在本地提前校验**。manifest 字段白名单就是典型：打包阶段不报错、安装阶段才炸，而且一次只报一个错。把官方 schema 的约束抄进打包闸门，一次报完全部问题，比逐个试错省几倍时间。
+- **JS 正则字面量里不能出现裸 `/`**。含 URL 或 `//` 的 pattern 一律用 `new RegExp("...")`。
 
 ### 6.9 网络与代理（国内环境）
 

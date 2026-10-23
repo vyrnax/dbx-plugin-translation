@@ -387,7 +387,51 @@ const checks = [
     return (mani.contributions || []).filter((c) => c.type === "menus")
       .every((c) => (c.items || []).every((it) => cmds.has(it.command) && locs.indexOf(it.location) >= 0));
   })()],
-  ["localizations 键都能对上真实贡献点 id", (() => {
+  // 包内 manifest 的字段白名单（对齐官方 schema 的 additionalProperties:false）。
+  // _buildpkg.js 打包前已校验一次，这里对【包内实际内容】再校验一次 ——
+  // 防止有人手工改包、或打包逻辑本身把非法字段写了进去。
+  ["包内 manifest 无未声明字段（menus 只允许 type/id/items 等）", (() => {
+    const ALLOWED = {
+      top: ["$schema", "manifest_version", "id", "name", "icon", "version", "publisher",
+            "description", "source", "homepage", "engines", "permissions", "entrypoints",
+            "capabilities", "contributions", "localizations"],
+      "connection-provider": ["type", "id", "label", "icon", "database_type", "description",
+                              "fields", "workbench", "filesystem_provider", "capabilities",
+                              "proxy_route", "actions"],
+      "workbench": ["type", "id", "label", "description", "icon", "ai"],
+      "filesystem-provider": ["type", "id", "label", "description", "icon", "schemes",
+                              "root_uri", "capabilities"],
+      "context-menu": ["type", "id", "label", "description", "icon", "menu", "dynamic", "action"],
+      "result-view": ["type", "id", "label", "description", "icon"],
+      "command": ["type", "id", "label", "description", "icon", "action", "enablement"],
+      "menus": ["type", "id", "items"],
+      "mcp": ["type", "id", "description", "ai_tools", "external_tools"],
+    };
+    const bad = [];
+    for (const k of Object.keys(mani)) {
+      if (!ALLOWED.top.includes(k)) bad.push("顶层:" + k);
+    }
+    for (const c of mani.contributions || []) {
+      const allowed = ALLOWED[c.type];
+      if (!allowed) { bad.push("未知类型:" + c.type); continue; }
+      for (const k of Object.keys(c)) {
+        if (!allowed.includes(k)) bad.push(c.type + ":" + k);
+      }
+    }
+    return bad.length === 0;
+  })(), (() => {
+    const bad = [];
+    const A = { "menus": ["type", "id", "items"], "workbench": ["type", "id", "label", "description", "icon", "ai"],
+                "command": ["type", "id", "label", "description", "icon", "action", "enablement"] };
+    for (const c of mani.contributions || []) {
+      const allowed = A[c.type];
+      if (allowed) for (const k of Object.keys(c)) if (!allowed.includes(k)) bad.push(c.type + "." + k);
+    }
+    return bad.join(",") || "无多余字段";
+  })()],
+  ["包内 manifest 的 menus 贡献点不含 label（本次安装失败的根因）",
+    (mani.contributions || []).filter((c) => c.type === "menus").every((c) => c.label === undefined)],
+    ["localizations 键都能对上真实贡献点 id", (() => {
     const l = mani.localizations && mani.localizations.en;
     if (!l || !l.contributions) return false;
     const ids = new Set((mani.contributions || []).map((c) => c.id));

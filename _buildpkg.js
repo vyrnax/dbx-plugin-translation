@@ -237,6 +237,184 @@ if (perms.indexOf("host.events") < 0) {
   process.exit(1);
 }
 
+// ---- 2.5) manifest 字段白名单闸门（对齐官方 manifest.schema.json）----
+//
+// 为什么需要这道闸门：Manifest v1 的所有对象都是 `additionalProperties: false`，
+// 多写一个字段宿主就会在【安装阶段】直接拒绝整个包，报错形如：
+//
+//   Failed to parse plugin manifest: unknown field `label`,
+//   expected `id` or `items` at line 68 column 3
+//
+// 这类错误在打包阶段完全看不出来（zip 打得出来、checksums 也算得对），
+// 只有装的时候才炸，而且报错只指出第一个问题 —— 修一个再装一次，
+// 逐个试错非常费时。因此在打包前一次性校验全部字段。
+//
+// 白名单直接抄自官方 schema 的 $defs（各 *Contribution 的 properties 键），
+// 升级 DBX 后应重新比对一次 https://raw.githubusercontent.com/t8y2/dbx/main/plugins/manifest.schema.json
+const MANIFEST_FIELDS = {
+  top: ["$schema", "manifest_version", "id", "name", "icon", "version", "publisher",
+        "description", "source", "homepage", "engines", "permissions", "entrypoints",
+        "capabilities", "contributions", "localizations"],
+  engines: ["dbx", "host_api"],
+  entrypoints: ["backend", "ui"],
+  backendEntrypoint: ["protocol_versions", "transport", "executable"],
+  uiEntrypoint: ["root", "entry"],
+  manifestLocalization: ["name", "description", "contributions"],
+  contributionLocalization: ["label", "description", "fields", "actions"],
+  contributions: {
+    "connection-provider": ["type", "id", "label", "icon", "database_type", "description",
+                            "fields", "workbench", "filesystem_provider", "capabilities",
+                            "proxy_route", "actions"],
+    "workbench":            ["type", "id", "label", "description", "icon", "ai"],
+    "filesystem-provider":  ["type", "id", "label", "description", "icon", "schemes",
+                            "root_uri", "capabilities"],
+    "context-menu":         ["type", "id", "label", "description", "icon", "menu",
+                            "dynamic", "action"],
+    "result-view":          ["type", "id", "label", "description", "icon"],
+    "command":              ["type", "id", "label", "description", "icon", "action", "enablement"],
+    // menus 只有 type/id/items —— 加 label 会被宿主拒装（本项目踩过这个坑）
+    "menus":                ["type", "id", "items"],
+    "mcp":                  ["type", "id", "description", "ai_tools", "external_tools"],
+  },
+  menuItem: ["location", "command", "group", "order", "default_visible", "when"],
+  openWorkbenchAction: ["type", "workbench", "presentation", "instance_key"],
+};
+
+// 权限白名单：官方 schema 用 enum + host.network 正则两种形态
+const PERMISSION_ENUM = [
+  "host.events", "host.binary", "host.workbench", "host.filesystem",
+  "host.plans:read", "host.schema:read", "host.storage", "host.ai",
+  "host.clipboard:read", "host.data:read", "host.connections:read",
+  "host.connections::read",
+];
+// 下面几条 pattern 都含 "/" 或 "//"。
+// 【不能用正则字面量】：JS 的正则字面量以 / 包裹，内部的裸 / 会提前终止字面量，
+// 导致 "Unterminated group" 这类语法错误（本项目踩过）。
+// 统一改用 new RegExp(字符串) —— 字符串里只需按普通字符串规则转义一次。
+const PERMISSION_NETWORK_RE = new RegExp("^host\\.network:https://[A-Za-z0-9._-]+(:[0-9]+)?$");
+const IDENTIFIER_RE = new RegExp("^[a-z0-9][a-z0-9._-]*$");
+const VERSION_RE = new RegExp("^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$");
+// assetPath：不能以 / 开头、不能含反斜杠、不能含 .. 或 //
+const ASSET_PATH_RE = new RegExp("^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//).+$");
+const LOCALE_RE = new RegExp("^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$");
+const URL_RE = new RegExp("^https?://[^\\s]+$");
+
+const schemaErrors = [];
+function rejectUnknown(obj, allowed, where) {
+  for (const k of Object.keys(obj || {})) {
+    if (!allowed.includes(k)) {
+      schemaErrors.push(`${where}: 含未声明字段 "${k}"（只允许 ${allowed.join(", ")}）`);
+    }
+  }
+}
+function requireFields(obj, required, where) {
+  for (const k of required) {
+    if (obj == null || obj[k] === undefined) schemaErrors.push(`${where}: 缺少必填字段 "${k}"`);
+  }
+}
+function checkPattern(value, re, where) {
+  if (typeof value === "string" && !re.test(value)) {
+    schemaErrors.push(`${where}: "${value}" 不符合格式要求 ${re}`);
+  }
+}
+
+(function validateManifest() {
+  rejectUnknown(mani, MANIFEST_FIELDS.top, "manifest");
+  requireFields(mani, ["manifest_version", "id", "name", "version", "publisher", "engines"], "manifest");
+  if (mani.manifest_version !== 1) schemaErrors.push("manifest_version 必须为数字 1");
+  checkPattern(mani.id, IDENTIFIER_RE, "manifest.id");
+  checkPattern(mani.version, VERSION_RE, "manifest.version");
+  for (const k of ["source", "homepage"]) {
+    if (mani[k] !== undefined) checkPattern(mani[k], URL_RE, `manifest.${k}`);
+  }
+  if (mani.icon !== undefined) checkPattern(mani.icon, ASSET_PATH_RE, "manifest.icon");
+
+  rejectUnknown(mani.engines, MANIFEST_FIELDS.engines, "engines");
+  requireFields(mani.engines, ["host_api"], "engines");
+
+  for (const perm of mani.permissions || []) {
+    if (!PERMISSION_ENUM.includes(perm) && !PERMISSION_NETWORK_RE.test(perm)) {
+      schemaErrors.push(`permissions: 非法权限 "${perm}"`);
+    }
+  }
+
+  const ep = mani.entrypoints || {};
+  rejectUnknown(ep, MANIFEST_FIELDS.entrypoints, "entrypoints");
+  if (ep.backend) {
+    rejectUnknown(ep.backend, MANIFEST_FIELDS.backendEntrypoint, "entrypoints.backend");
+    requireFields(ep.backend, ["executable"], "entrypoints.backend");
+    // executable 在打包时会被重写为 bin/<target>/...，此处只校验格式合法性
+    checkPattern(ep.backend.executable, ASSET_PATH_RE, "entrypoints.backend.executable");
+  }
+  if (ep.ui) {
+    rejectUnknown(ep.ui, MANIFEST_FIELDS.uiEntrypoint, "entrypoints.ui");
+    requireFields(ep.ui, ["entry"], "entrypoints.ui");
+    checkPattern(ep.ui.entry, ASSET_PATH_RE, "entrypoints.ui.entry");
+  }
+
+  for (const [i, c] of (mani.contributions || []).entries()) {
+    const where = `contributions[${i}](${c.type})`;
+    const allowed = MANIFEST_FIELDS.contributions[c.type];
+    if (!allowed) { schemaErrors.push(`${where}: 未知贡献点类型 "${c.type}"`); continue; }
+    rejectUnknown(c, allowed, where);
+    checkPattern(c.id, IDENTIFIER_RE, `${where}.id`);
+    if (c.icon !== undefined) checkPattern(c.icon, ASSET_PATH_RE, `${where}.icon`);
+    // 各类型的必填字段
+    const requiredByType = {
+      "connection-provider": ["type", "id", "database_type", "fields"],
+      "workbench": ["type", "id", "label"],
+      "filesystem-provider": ["type", "id", "label", "schemes"],
+      "context-menu": ["type", "id", "label", "menu"],
+      "result-view": ["type", "id", "label"],
+      "command": ["type", "id", "label", "action"],
+      "menus": ["type", "id"],
+      "mcp": ["type", "id"],
+    };
+    requireFields(c, requiredByType[c.type], where);
+
+    if (c.type === "menus") {
+      (c.items || []).forEach((it, j) => {
+        const w2 = `${where}.items[${j}]`;
+        rejectUnknown(it, MANIFEST_FIELDS.menuItem, w2);
+        requireFields(it, ["location", "command", "group", "order"], w2);
+        if (!["commandPalette", "appToolbar", "appSidebar"].includes(it.location)) {
+          schemaErrors.push(`${w2}: location "${it.location}" 非法`);
+        }
+      });
+    }
+    if (c.type === "command" && c.action) {
+      rejectUnknown(c.action, MANIFEST_FIELDS.openWorkbenchAction, `${where}.action`);
+      requireFields(c.action, ["type", "workbench"], `${where}.action`);
+      if (c.action.presentation !== undefined &&
+          !["tab", "panel"].includes(c.action.presentation)) {
+        schemaErrors.push(`${where}.action: presentation "${c.action.presentation}" 非法（只允许 tab/panel）`);
+      }
+    }
+  }
+
+  const contribIds = new Set((mani.contributions || []).map((c) => c.id));
+  for (const [locale, body] of Object.entries(mani.localizations || {})) {
+    if (!LOCALE_RE.test(locale)) schemaErrors.push(`localizations: 键 "${locale}" 不是合法 locale`);
+    rejectUnknown(body, MANIFEST_FIELDS.manifestLocalization, `localizations.${locale}`);
+    for (const [cid, cbody] of Object.entries(body.contributions || {})) {
+      if (!contribIds.has(cid)) {
+        schemaErrors.push(`localizations.${locale}.contributions: 含不存在的贡献点 id "${cid}"`);
+      }
+      rejectUnknown(cbody, MANIFEST_FIELDS.contributionLocalization,
+        `localizations.${locale}.contributions.${cid}`);
+    }
+  }
+})();
+
+if (schemaErrors.length) {
+  console.error("\n[FATAL] manifest.json 不符合官方 schema（宿主会在安装阶段直接拒绝整个包）：");
+  schemaErrors.forEach((e) => console.error("   - " + e));
+  console.error("\n   参考：https://raw.githubusercontent.com/t8y2/dbx/main/plugins/manifest.schema.json");
+  console.error("   注意 Manifest v1 的所有对象都是 additionalProperties:false，多一个字段就装不上。\n");
+  process.exit(1);
+}
+console.log("  manifest schema 校验通过（字段白名单 / 必填项 / 格式 / 权限枚举 / locale 键）");
+
 // ---- 3) 贡献点闸门 ----
 const contribs = mani.contributions || [];
 const wbIds = new Set(contribs.filter((c) => c.type === "workbench").map((c) => c.id));
@@ -281,9 +459,23 @@ if (loc) {
     console.error("        宿主会把对不上的键判为无效清单。\n");
     process.exit(1);
   }
-  const uncovered = [...ids].filter((id) => !loc[id]);
+  // 只对【有可本地化文案】的贡献点要求覆盖。
+  // menus 贡献点的 schema 只允许 type/id/items —— 它本身没有 label/description，
+  // 因此不存在需要本地化的文案，不该因为它没出现在 localizations 里而告警。
+  const localizableIds = new Set(
+    contribs.filter((c) => c.label !== undefined || c.description !== undefined).map((c) => c.id)
+  );
+  const uncovered = [...localizableIds].filter((id) => !loc[id]);
   if (uncovered.length) {
-    console.error("\n[WARN] 以下贡献点没有英文本地化：" + uncovered.join(", ") + "\n");
+    console.error("\n[WARN] 以下有文案的贡献点没有英文本地化：" + uncovered.join(", ") + "\n");
+  }
+  // 反向检查：localizations 里不该有「对应贡献点无可本地化文案」的死条目
+  const deadLoc = Object.keys(loc).filter((id) => ids.has(id) && !localizableIds.has(id));
+  if (deadLoc.length) {
+    console.error("\n[FATAL] localizations 含死条目（对应贡献点没有 label/description 可本地化）：" +
+      deadLoc.join(", "));
+    console.error("        menus 贡献点的 schema 只允许 type/id/items，为它本地化 label 是无效配置。\n");
+    process.exit(1);
   }
 }
 
