@@ -1,5 +1,5 @@
 /*
- * 翻译助手 —— 主应用
+ * Translation 即时翻译 —— 主应用
  * ==========================================================================
  * 设计铁律（来自 dbx-todo 的事故沉淀，详见 AGENTS.md 第 4 章）：
  *
@@ -115,15 +115,15 @@
    * 完全不知道该反馈什么。接住后至少能在诊断报告里留下证据。
    */
   function reportErr(where, err) {
-    console.error("[翻译助手] " + where + ":", err);
+    console.error("[Translation] " + where + ":", err);
     toast(t("genericFail", { msg: (err && err.message) || String(err) }), "error");
   }
   window.addEventListener("error", function (e) {
-    console.error("[翻译助手] 页面错误:", e.error || e.message);
+    console.error("[Translation] 页面错误:", e.error || e.message);
     if (S && S.log) { S.log("页面级异常", false, String(e.message || (e.error && e.error.message) || "")); }
   });
   window.addEventListener("unhandledrejection", function (e) {
-    console.error("[翻译助手] 未捕获 Promise:", e.reason);
+    console.error("[Translation] 未捕获 Promise:", e.reason);
     if (S && S.log) { S.log("未捕获 Promise", false, String((e.reason && e.reason.message) || e.reason || "")); }
   });
 
@@ -189,21 +189,217 @@
     return checked ? checked.value : "";
   }
 
-  /* ============ 主题 ============ */
+  /* ============ 主题与字体：完整跟随宿主 DBX ============
+   *
+   * 设计目标：DBX 切换主题、调色板、UI 字体、编辑器字体、圆角风格时，
+   * 本插件界面【实时】跟着变，无需重开工作台。参考 dbx-plugin-toolbox 的
+   * src/lib/host.js applyTheme 实现。
+   *
+   * 官方文档「主题负载携带什么」明确了投递矩阵：
+   *   浅色/深色/跟随系统 → theme.appearance
+   *   调色板 + 自定义配色 → --color-* tokens
+   *   圆角风格           → --radius-* tokens
+   *   UI 字体            → --font-sans token
+   *   编辑器（等宽）字体  → --font-mono token + theme.editor.fontFamily
+   *   编辑器字号         → theme.editor.fontSize
+   *
+   * 两层机制配合：
+   *   1. 自带完整明暗两套 CSS 变量作为【兜底】—— 开发宿主不投递 tokens 时
+   *      界面仍有正确的明暗配色，不会变成一片白或一片黑。
+   *   2. 宿主投递了 tokens 就用 setProperty 覆盖到文档根元素，实现精确跟随。
+   *      tokens 缺失时不覆盖，兜底变量继续生效。
+   */
 
-  // applyTheme 从宿主读外观并设置 body[data-theme]。
+  // 宿主可能只投递 --font-sans，而组件里用的是 --font-family（或反之）。
+  // 建立别名对，任一存在就补齐另一个，避免「宿主给了字体但组件读不到」。
+  // 这几对直接对齐 dbx-plugin-toolbox 的 ALIAS_PAIRS。
+  var TOKEN_ALIAS_PAIRS = [
+    ["--font-sans", "--font-family"],
+    ["--font-mono", "--dbx-editor-font-family"],
+    ["--dbx-editor-font-size", "--editor-font-size"]
+  ];
+
+  // 宿主 token → 本项目语义变量的映射。
   //
-  // 自带完整明暗两套 CSS 变量而不依赖宿主 token 穿透：
-  // 官方文档说明「开发宿主不模拟完整组件 kit，自定义 token 样式在两者中更一致」。
+  // 为什么需要这一层：本项目 styles.css 用的是自己的语义变量名
+  // （--bg / --panel / --text / --primary …），而宿主投递的是
+  // DBX/shadcn 体系的 --color-background / --color-card / --color-foreground …。
+  // 两套名字对不上，宿主投递的调色板就【完全不会生效】——
+  // 只有明暗切换生效（因为 CSS 里有 body[data-theme="dark"] 两套兜底值），
+  // 用户在 DBX 里自定义的主色、边框色、圆角都传不进来。
+  //
+  // 映射后：宿主投递了什么就覆盖什么，没投递的保持 CSS 里的兜底值。
+  // 这样「跟随宿主」才是完整的（调色板 + 圆角 + 字体），而不只是明暗。
+  //
+  // 注意映射方向是【宿主 → 本项目】，且只在宿主确实投递了该 token 时才覆盖，
+  // 否则会把兜底值冲成 undefined。
+  var HOST_TOKEN_MAP = [
+    // 背景与面板
+    ["--color-background", "--bg"],
+    ["--color-card", "--panel"],
+    ["--color-muted", "--panel-2"],
+    ["--color-accent", "--panel-3"],
+    // 边框
+    ["--color-border", "--border"],
+    ["--color-input", "--border-strong"],
+    // 文字
+    ["--color-foreground", "--text"],
+    ["--color-muted-foreground", "--text-2"],
+    // 主色
+    ["--color-primary", "--primary"],
+    ["--color-primary-foreground", "--primary-fg"],
+    // 语义色
+    ["--color-destructive", "--danger"],
+    ["--color-destructive-foreground", "--danger-fg"],
+    ["--color-success", "--ok"],
+    ["--color-warning", "--warn"],
+    // 圆角
+    ["--radius-md", "--radius"],
+    ["--radius-sm", "--radius-sm"]
+  ];
+
+  // appliedTokens 记录上一次应用到根元素的 token 名，
+  // 用于在主题切换后移除「这次不再投递」的 token，避免旧值残留。
+  var appliedTokens = {};
+
+  // flattenTokens 把可能嵌套的 tokens 对象拍平成 { "--css-name": "value" }。
+  //
+  // 宿主的 tokens 可能是 { color: { primary: "#fff" } } 这种嵌套结构，
+  // 也可能是扁平的 { "--color-primary": "#fff" }。两种都要能处理。
+  function flattenTokens(tokens, prefix, out) {
+    out = out || {};
+    if (!tokens || typeof tokens !== "object") { return out; }
+    var keys = Object.keys(tokens);
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var value = tokens[key];
+      var name = prefix ? (prefix + "-" + key) : key;
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        // 嵌套对象：若其值全是标量则递归拍平，否则跳过（不认识的深层结构不强解）
+        flattenTokens(value, name.replace(/^--+/, ""), out);
+        continue;
+      }
+      var cssName = toCssVarName(name);
+      var cssValue = toCssValue(value);
+      if (cssName && cssValue) { out[cssName] = cssValue; }
+    }
+    return out;
+  }
+
+  // toCssVarName 把 token 名规范成合法的 CSS 变量名（--xxx-yyy）。
+  // 非法名（含空格、以数字开头等）返回空串，调用方据此跳过 —— 防止
+  // setProperty 抛异常或注入畸形样式。
+  function toCssVarName(name) {
+    var raw = String(name == null ? "" : name).trim();
+    if (!raw) { return ""; }
+    var dashed = raw.indexOf("--") === 0 ? raw : ("--" + raw);
+    return /^--[a-zA-Z_][a-zA-Z0-9-]*$/.test(dashed) ? dashed : "";
+  }
+
+  // toCssValue 只接受有限的字符串与数字，其余一律拒绝。
+  // 这是防注入的关键：token 值来自宿主，虽然可信，但仍不应把
+  // 任意字符串塞进 style（例如含 "}" 或 ";" 的值会破坏样式表）。
+  function toCssValue(value) {
+    if (typeof value === "number" && isFinite(value)) { return String(value); }
+    if (typeof value === "string") {
+      var v = value.trim();
+      // 拒绝含 CSS 语法字符的值，避免样式注入
+      if (v && !/[;{}<>]/.test(v)) { return v; }
+    }
+    return "";
+  }
+
   function applyTheme() {
-    var mode = "light";
-    try {
-      if (S && typeof S.theme === "function") { mode = S.theme(); }
-    } catch (e) { /* 忽略 */ }
-    // 用户可在设置里覆盖（例如宿主跟随系统但用户想强制暗色）
-    var override = state.prefs && state.prefs.themeOverride;
-    if (override === "dark" || override === "light") { mode = override; }
-    document.body.dataset.theme = mode;
+    var theme = (S && typeof S.themeObject === "function")
+      ? S.themeObject()
+      : { appearance: (S && S.theme ? S.theme() : "light"), tokens: {}, editor: null };
+
+    var appearance = theme.appearance === "dark" ? "dark" : "light";
+    var root = document.documentElement;
+
+    // 1) 外观：同时设置多个约定位置，兼容不同 CSS 选择器写法
+    //    （本项目用 body[data-theme]，但也设 root 的 dataset 与 class 以防万一）
+    document.body.dataset.theme = appearance;
+    root.dataset.dbxTheme = appearance;
+    if (root.classList) {
+      if (appearance === "dark") { root.classList.add("dark"); }
+      else { root.classList.remove("dark"); }
+    }
+    // colorScheme 让原生控件（滚动条、表单）也跟随明暗
+    try { root.style.colorScheme = appearance; } catch (e) { /* 老浏览器忽略 */ }
+
+    // 2) tokens：把宿主投递的颜色/字体/圆角变量应用到根元素
+    var flat = flattenTokens(theme.tokens, "", {});
+
+    // 编辑器字体/字号可能不在 tokens 里，而在 theme.editor 结构里，单独提取
+    if (theme.editor) {
+      if (theme.editor.fontFamily) {
+        var ef = toCssValue(theme.editor.fontFamily);
+        if (ef) { flat["--font-mono"] = ef; }
+      }
+      if (theme.editor.fontSize) {
+        var es = toCssValue(theme.editor.fontSize);
+        // fontSize 可能是纯数字（px）或带单位，纯数字补 px
+        if (es) { flat["--editor-font-size"] = /^\d+(\.\d+)?$/.test(es) ? (es + "px") : es; }
+      }
+    }
+
+    // 别名补齐：--font-sans ↔ --font-family 等
+    for (var a = 0; a < TOKEN_ALIAS_PAIRS.length; a++) {
+      var left = TOKEN_ALIAS_PAIRS[a][0], right = TOKEN_ALIAS_PAIRS[a][1];
+      if (flat[left] && !flat[right]) { flat[right] = flat[left]; }
+      else if (flat[right] && !flat[left]) { flat[left] = flat[right]; }
+    }
+
+    // 宿主 token → 本项目语义变量。
+    // 只在宿主确实投递了该 token 时才映射，避免把 CSS 兜底值冲掉。
+    var mapped = 0;
+    for (var m = 0; m < HOST_TOKEN_MAP.length; m++) {
+      var hostName = HOST_TOKEN_MAP[m][0], localName = HOST_TOKEN_MAP[m][1];
+      if (flat[hostName]) { flat[localName] = flat[hostName]; mapped++; }
+    }
+
+    // 应用本次的 token
+    var names = Object.keys(flat);
+    for (var n = 0; n < names.length; n++) {
+      try { root.style.setProperty(names[n], flat[names[n]]); } catch (e) { /* 单个失败不影响其余 */ }
+    }
+    // 移除上一次应用过、这次不再投递的 token（主题切换后避免旧值残留）
+    for (var prev in appliedTokens) {
+      if (Object.prototype.hasOwnProperty.call(appliedTokens, prev) && !(prev in flat)) {
+        try { root.style.removeProperty(prev); } catch (e) { /* 忽略 */ }
+      }
+    }
+    appliedTokens = flat;
+
+    // 记录到诊断，便于排查「主题没跟随」时确认宿主到底投递了什么
+    if (S && S.log) {
+      S.log("应用宿主主题", true,
+        "appearance=" + appearance + " tokens=" + names.length +
+        " 映射到语义变量=" + mapped +
+        (flat["--font-sans"] ? " font-sans=有" : " font-sans=无(用兜底)") +
+        (flat["--font-mono"] ? " font-mono=有" : " font-mono=无(用兜底)"));
+    }
+  }
+
+  // renderAppearanceInfo 在设置页只读展示当前跟随到的外观信息。
+  //
+  // 主题与语言一律跟随宿主，不提供手动覆盖入口（用户要求）。
+  // 但仍展示「当前跟随到什么」，让用户确认插件确实跟上了 DBX 的设置，
+  // 也便于排查「为什么我的插件是深色而 DBX 是浅色」这类问题。
+  function renderAppearanceInfo() {
+    var theme = (S && typeof S.themeObject === "function") ? S.themeObject() : null;
+    var appearance = theme ? theme.appearance : (S && S.theme ? S.theme() : "light");
+    var tokenCount = theme ? Object.keys(flattenTokens(theme.tokens, "", {})).length : 0;
+    var fontSans = theme ? (flattenTokens(theme.tokens, "", {})["--font-sans"] || "") : "";
+    var locale = (window.TranslationI18N && window.TranslationI18N.locale)
+      ? window.TranslationI18N.locale() : "zh-CN";
+
+    txt("info-theme", (appearance === "dark" ? t("themeDark") : t("themeLight")) +
+      "  ·  " + t("followHost"));
+    txt("info-locale", locale === "en" ? "English" : "简体中文");
+    txt("info-font", fontSans || t("fontFollowHost"));
+    txt("info-token-count", String(tokenCount));
   }
 
   /* ============ 视图切换 ============ */
@@ -621,7 +817,9 @@
     txt("info-version", st.sidecarVersion || "—");
 
     var scheme = st.secretScheme || "—";
-    var secure = st.secretSecure ? "（系统密钥库，真加密）" : "（机器绑定混淆，安全性较低）";
+    // 文案必须走 i18n：硬编码中文会让英文界面下仍显示中文，
+    // 而这类问题在中文环境里测不出来，只有切到英文才暴露。
+    var secure = st.secretSecure ? t("secretSecureYes") : t("secretSecureNo");
     txt("info-secret", scheme + " " + secure);
 
     setChecked("set-instant-enabled", state.prefs.instantEnabled !== false);
@@ -633,6 +831,9 @@
     setVal("set-history-limit", state.prefs.historyLimit || 500);
     setVal("set-default-source", state.prefs.defaultSourceLang || "auto");
     setVal("set-default-target", state.prefs.defaultTargetLang || "zh");
+
+    // 外观信息（只读展示，不可修改 —— 主题与语言一律跟随宿主 DBX）
+    renderAppearanceInfo();
   }
 
   function saveSettings() {
@@ -960,6 +1161,7 @@
 
     // 设置页
     click("btn-save-settings", saveSettings);
+
     click("btn-reconnect", reconnect);
     click("btn-banner-retry", reconnect);
     click("btn-settings-export", actExport);
@@ -1005,18 +1207,59 @@
       }
     });
 
-    // 宿主环境变化（语言/主题切换）
-    window.addEventListener("dbx-plugin-env", function (ev) {
+    // 宿主环境变化（主题 / 调色板 / 字体 / 语言切换）
+    //
+    // 【必须用 capture=true，且 window 与 document 都注册】——
+    // 这是从 dbx-plugin-toolbox 的 src/lib/host.js 学来的关键细节，
+    // 它的注释写得很明确：
+    //
+    //   "DBX env events target document and do not bubble;
+    //    capture supports both current and older window-based hosts."
+    //
+    // 也就是说：新版宿主把 dbx-plugin-env 事件 target 在 document 上，
+    // 而 document 是 window 的【祖先】，事件不冒泡的话，
+    // 注册在 window 上的【冒泡阶段】监听器永远收不到。
+    // 只有 capture 阶段（从 window 向下传播到 document）才能截获。
+    //
+    // 老宿主则是 target 在 window 上，此时 window 的 capture 与冒泡都能收到。
+    // 所以两个目标 + capture 的组合能同时兼容新旧宿主。
+    //
+    // 漏掉这一点的症状是「DBX 切了主题，插件界面纹丝不动」，
+    // 而且开发宿主可能行为不同，导致本地测不出来、装进桌面端才暴露。
+    var onEnv = function (ev) {
       try {
+        // 语言：重新探测宿主 locale 并刷新全部文案
         if (window.TranslationI18N) { window.TranslationI18N.detect(); }
         applyI18N();
+        // 主题与字体：applyTheme 会重新读取完整 theme 负载（含 tokens）
         applyTheme();
+        // 语言变了会影响动态生成的下拉选项文案，需要重绘
         renderLangSelects();
         renderEngineSelect();
         renderStatus();
-        S.log("宿主环境变化", true, ev && ev.detail ? "已刷新语言与主题" : "");
+        renderAppearanceInfo();
+        var hostLoc = (window.TranslationI18N && window.TranslationI18N.hostLocale)
+          ? window.TranslationI18N.hostLocale() : "?";
+        S.log("宿主环境变化", true,
+          "已刷新主题/字体/语言（宿主 locale=" + hostLoc +
+          "，事件 target=" + (ev && ev.target ? (ev.target === document ? "document" : "window") : "?") + "）");
       } catch (e) { reportErr("响应环境变化", e); }
-    });
+    };
+    // capture=true：截获 target 在 document 上且不冒泡的事件
+    window.addEventListener("dbx-plugin-env", onEnv, true);
+    document.addEventListener("dbx-plugin-env", onEnv, true);
+
+    // onInit 兜底：某些宿主在桥接就绪时只发 init 不发 env，
+    // 此时也要应用一次主题，否则首屏可能用错外观。
+    if (S && typeof S.onInit === "function") {
+      try {
+        S.onInit(function () {
+          applyTheme();
+          if (window.TranslationI18N) { window.TranslationI18N.detect(); }
+          applyI18N();
+        });
+      } catch (e) { /* 老宿主无 onInit，忽略 */ }
+    }
   }
 
   // swapLang 交换源语言与目标语言。

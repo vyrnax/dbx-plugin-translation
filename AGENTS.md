@@ -602,10 +602,19 @@ var RPC_TIMEOUT = 30000, READY_TIMEOUT = 8000, CTX_TIMEOUT = 2500,
 | Go 原始字符串里写不出反引号 | Prompt 文本需要提到 ``` 围栏，而原始字符串（反引号包裹）内部不能含反引号 | 用「原始字符串 + 解释字符串 + 原始字符串」拼接：`` ` + "```" + ` `` |
 | `context.Cause(err)` 编译失败 | `context.Cause` 接受的是 `context` 而不是 `error` | 取消判定用 `errors.Is(err, context.Canceled)` 沿 Unwrap 链查找 |
 
+| `dbx-plugin-env` 监听器在桌面端不触发 | 新版宿主把该事件 target 在 **document** 上且**不冒泡**，注册在 window 冒泡阶段的监听器收不到；而开发宿主是在 iframe 内 `dispatchEvent`（会冒泡），所以本地测不出来 | `window` 与 `document` **都注册且都用 `capture=true`**；另加 `onInit` 兜底（某些宿主只发 init 不发 env） |
+| 宿主改了调色板/圆角，插件界面不变 | 本项目 CSS 用 `--bg`/`--panel`/`--text`，宿主投递的是 `--color-background`/`--color-card`/`--color-foreground`，**两套变量名对不上**，token 投递了也没人消费 | 加 `HOST_TOKEN_MAP` 做「宿主名 → 本项目名」映射，且只在宿主确实投递了该 token 时才覆盖（否则会把 CSS 兜底值冲成 undefined） |
+| 映射写了但界面仍不变 | 映射目标 `--primary-fg` 在 CSS 里**根本没定义**，按钮仍硬编码 `color: #fff` —— 映射到一个不存在的变量等于没映射 | `_verify.mjs` 解析 `HOST_TOKEN_MAP` 每一对，逐个核对目标变量在 CSS 中「已定义」且「被 `var()` 消费」；同时校验无硬编码 `color: #fff` |
+| 英文界面下仍显示中文 | `info-secret` 的「（系统密钥库，真加密）」被硬编码成中文字符串，没走 i18n | 动态生成的文案也必须走 `t()`；这类问题在中文环境测不出来，只有切英文才暴露 |
+| `_buildpkg.js` 报 `SyntaxError: Invalid or unexpected token` | 给 JS 文件加注释时误用了 Python 的 `#`（批量改两个闸门脚本时复制粘贴串了） | JS 用 `//`、Python 用 `#`；改完立刻 `node --check` 验语法，别等到打包才发现 |
+| 开发宿主里字体跟随测不出来 | 开发宿主只投递 15 个 token（`--color-*` + `--radius-*`），**不含 `--font-*`**（已实测确认） | 字体跟随只能在桌面端验证；CSS 必须用 `var(--font-sans, 兜底栈)` 形式，保证宿主没投递时仍走兜底而不是退化成衬线体 |
+
 **从这些坑里提炼的两条通用规则**（已并入铁律）：
 
 - **静态闸门的判据必须在 `_buildpkg.js` 与 `_verify.mjs` 之间保持一致**，且都要先剥离注释再扫描。两份闸门判据不一致会产生「本地打包通过、校验失败」的困惑。
 - **凡是「时好时坏」的断言，先怀疑 WAL / 缓存 / 异步时序**。数据库内容检查要覆盖 WAL 文件；异步协议测试要用轮询等待而非固定 sleep。
+- **「跟随宿主」类功能必须在桌面端验证，开发宿主测不出来**。开发宿主与桌面端在事件 target、token 投递范围上都有差异（env 事件冒泡行为、`--font-*` 是否投递）。凡是依赖宿主投递内容的功能，都要在 `_verify.mjs` 里加静态校验作为替代防线。
+- **映射/别名类代码必须双向校验**：既校验「源存在」，也校验「目标被真实消费」。只写映射不核对目标，会产生「代码看起来对、界面就是不变」的静默失效。
 
 ### 6.9 网络与代理（国内环境）
 
@@ -618,35 +627,90 @@ var RPC_TIMEOUT = 30000, READY_TIMEOUT = 8000, CTX_TIMEOUT = 2500,
 
 本机已配置完成（Go 1.27.3 @ `C:\develop\Go`，GOPROXY 已设）。
 
-### 6.10 主题与国际化
+### 6.10 主题、字体与国际化（一律跟随宿主）
 
-**主题**：宿主把 tokens 注入文档根元素并更新 `data-dbx-theme`。但参考插件的做法更稳——**自带完整明暗两套 CSS 变量**，从 `dbxPlugin.theme` 读当前外观后设 `document.body.dataset.theme`：
+**设计决策：主题、字体、界面语言全部跟随宿主 DBX，不提供任何手动覆盖入口。**
+
+理由：用户在 DBX 里切了深色主题或英文界面，期望所有面板一起变；插件若自顾自保持另一套外观会显得割裂。而且这三个值的唯一事实来源就是宿主，存进 prefs 反而会制造「设置里显示 A、界面实际是 B」的不一致。
+
+因此 `prefKeys` 白名单里**刻意没有** `themeOverride` / `uiLocale`，并有 `TestPrefs_AppearanceKeysRejected` 把「外观不入库」固化成契约，防止日后被顺手加回。
+
+#### 6.10.1 env 事件必须用 capture 注册（最易漏的坑）
+
+`dbx-plugin-toolbox` 的 `src/lib/host.js` 注释写得很明确：
+
+> DBX env events target **document** and do not bubble; capture supports both current and older window-based hosts.
+
+也就是说新版宿主把 `dbx-plugin-env` 的 target 放在 **document** 上且**不冒泡**。document 是 window 的祖先，事件不冒泡时，注册在 window **冒泡阶段**的监听器永远收不到。
 
 ```js
-function applyTheme() {
-  var t = "light";
-  try {
-    if (window.dbxPlugin && window.dbxPlugin.theme) {
-      var th = window.dbxPlugin.theme;
-      if (typeof th === "function") th = th();   // 兼容函数与属性两种形态
-      t = (th === "dark") ? "dark" : "light";
-    }
-  } catch (e) { /* 忽略 */ }
-  document.body.dataset.theme = t;
-}
+// ❌ 收不到（新版宿主 target=document 且不冒泡）
+window.addEventListener("dbx-plugin-env", onEnv);
+
+// ✅ capture 阶段从 window 向下传播到 document，能截获
+window.addEventListener("dbx-plugin-env", onEnv, true);
+document.addEventListener("dbx-plugin-env", onEnv, true);   // 双注册兼容新旧宿主
 ```
 
-注意 `theme` 可能是**属性也可能是函数**，要兼容。每次 `render()` 都调一次 `applyTheme()`。
+**漏掉的症状**：「DBX 切了主题，插件界面纹丝不动」。而开发宿主是在 iframe 内部 `dispatchEvent`（target = iframe window，会冒泡），所以**本地测不出来、装进桌面端才暴露**。`_verify.mjs` 已把这条固化成校验项。
 
-更完整的做法是监听 `window.addEventListener("dbx-plugin-env", handler)` 响应语言/主题变化，先读 `dbxPlugin.locale`/`theme` 初始化再在事件中刷新。
+另外要加 `onInit` 兜底：某些宿主在桥接就绪时只发 init 不发 env，首屏会用错外观。
 
-**不要依赖父页面 CSS 自动穿透 iframe**——穿不过来。
+#### 6.10.2 主题负载的完整结构
 
-**国际化**：`localizations` 只覆盖插件名称、说明、贡献点 label/description、字段和动作文案，**不会翻译插件 UI 自己的文本**。UI 文本要自己做 i18n。
+官方文档「主题负载携带什么」的投递矩阵：
+
+| DBX 设置 | 投递形式 |
+|---|---|
+| 浅色/深色/跟随系统 | `theme.appearance` |
+| 调色板 + 自定义配色 | `--color-*` tokens |
+| 圆角风格 | `--radius-*` tokens |
+| UI 字体 | `--font-sans` token |
+| 编辑器（等宽）字体 | `--font-mono` token + `theme.editor.fontFamily` |
+| 编辑器字号 | `theme.editor.fontSize` |
+| SQL 编辑器语法主题 | `theme.editor.theme` |
+| UI 缩放（宿主窗口级） | **不投递** —— 插件自管缩放 |
+| 数据网格字体/类型配色、编辑器背景图 | **不投递** —— DB 域（`--dbx-*` 不在扫取范围） |
+
+`theme` 可能是**属性也可能是函数**，老宿主甚至只返回 `"dark"`/`"light"` 字符串，三种形态都要接（见 `storage.js` 的 `readThemeObject`）。
+
+#### 6.10.3 宿主 token 名与本项目变量名对不上（真实功能缺口）
+
+本项目 `styles.css` 用自己的语义变量名（`--bg` / `--panel` / `--text` / `--primary`），而宿主投递的是 DBX/shadcn 体系的 `--color-background` / `--color-card` / `--color-foreground`。**两套名字对不上，宿主投递的调色板就完全不会生效** —— 只有明暗切换生效（因为 CSS 里有 `body[data-theme="dark"]` 两套兜底值），用户在 DBX 里自定义的主色、边框色、圆角都传不进来。
+
+对策是加一层 `HOST_TOKEN_MAP` 映射（宿主名 → 本项目名），且**只在宿主确实投递了该 token 时才覆盖**，否则会把 CSS 兜底值冲成 undefined。
+
+**映射目标必须在 CSS 里真实定义且被消费**，否则映射写了等于没写。本项目曾出现过映射到 `--primary-fg` 但 CSS 里根本没这个变量、按钮仍硬编码 `color: #fff` 的情况。`_verify.mjs` 现在会解析 `HOST_TOKEN_MAP` 的每一对，逐个核对目标变量在 CSS 中「已定义」且「被 `var()` 消费」。
+
+#### 6.10.4 字体跟随的落地方式
+
+```css
+/* --font-sans / --font-mono 由 applyTheme 从宿主注入，这里只提供兜底 */
+--sans: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI",
+            "PingFang SC", "Microsoft YaHei", sans-serif);
+--mono: var(--font-mono, ui-monospace, "SFMono-Regular", Consolas, Menlo, monospace);
+
+body { font-family: var(--sans); }
+```
+
+用 `var(--font-sans, 兜底栈)` 而不是直接写死字体：宿主投递了就覆盖，没投递就用兜底，两种情况都正确。
+
+**开发宿主只投递 15 个 token（`--color-*` + `--radius-*`），不含 `--font-*`**（已实测确认）。所以字体跟随**只能在桌面端验证**，开发宿主里永远走兜底栈。
+
+#### 6.10.5 字号不归宿主管
+
+官方文档明确：「字体&字号类关注点归插件所有：宿主不规定你的字号」。`theme.editor.fontSize` 是**编辑器**字号，给等宽代码区用；UI 正文仍由插件自己定（本项目 14px）。不要拿编辑器字号去覆盖 body 字号。
+
+#### 6.10.6 国际化
+
+`localizations` 只覆盖 manifest 层文案（插件名、说明、贡献点 label/description），**不会翻译插件 UI 自己的文本**。UI 文本必须自建字典（`ui/i18n.js`，zh-CN 与 en 各 137 键，完全对称）。
+
+语言来源：`dbxPlugin.locale`，归一化规则「以 zh 开头 → zh-CN，以 en 开头 → en，无法识别 → 回退 zh-CN」。
+
+**动态生成的文案也要走 i18n**：本项目曾把 `info-secret` 的「（系统密钥库，真加密）」硬编码成中文，在英文界面下仍显示中文。这类问题在中文环境里测不出来，只有切到英文才暴露。
 
 必须测试浅色/深色主题和 `zh-CN`/`en` 两种语言。
 
-**宿主不投递的东西**（要自管）：UI 缩放（宿主窗口级）、数据网格字体/类型配色、编辑器背景图。`--dbx-*` 变量不在扫取范围。
 
 ---
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>翻译助手</title>
+  <title>Translation 即时翻译</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -25,7 +25,7 @@
             <path d="M62 52 h16"/><path d="M74 46 l6 6 l-6 6"/><path d="M86 76 h-16"/><path d="M74 70 l-6 6 l6 6"/>
           </g>
         </svg>
-        <span class="brand-name" data-i18n="appTitle">翻译助手</span>
+        <span class="brand-name" data-i18n="appTitle">Translation 即时翻译</span>
       </div>
 
       <!-- 视图切换 -->
@@ -243,6 +243,30 @@
               <input id="set-history-limit" class="input num" type="number" min="100" max="5000" step="50" />
             </label>
             <p class="setting-note" data-i18n="historyLimitNote">超出上限时自动删除最旧的记录，已收藏的记录不会被删除。</p>
+          </fieldset>
+
+          <!-- 外观：只读展示，主题/字体/语言一律跟随宿主 DBX，不提供手动覆盖 -->
+          <fieldset class="setting-group">
+            <legend data-i18n="groupAppearance">外观（跟随宿主）</legend>
+            <p class="setting-note" data-i18n="appearanceFollowNote">
+              主题、字体与界面语言均自动跟随 DBX 的设置，在 DBX 中修改后本插件会实时同步，无需在此配置。
+            </p>
+            <div class="setting-row">
+              <span class="setting-label" data-i18n="currentTheme">当前主题</span>
+              <code id="info-theme" class="info-code">—</code>
+            </div>
+            <div class="setting-row">
+              <span class="setting-label" data-i18n="currentLocale">界面语言</span>
+              <code id="info-locale" class="info-code">—</code>
+            </div>
+            <div class="setting-row">
+              <span class="setting-label" data-i18n="currentFont">UI 字体</span>
+              <code id="info-font" class="info-code">—</code>
+            </div>
+            <div class="setting-row">
+              <span class="setting-label" data-i18n="hostTokens">宿主主题变量</span>
+              <code id="info-token-count" class="info-code">—</code>
+            </div>
           </fieldset>
 
           <fieldset class="setting-group">

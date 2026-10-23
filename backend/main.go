@@ -1,4 +1,4 @@
-// DBX 翻译助手 —— 原生侧车（Go，纯标准库 + vendor 的官方 SDK + modernc.org/sqlite）
+// DBX Translation 即时翻译 —— 原生侧车（Go，纯标准库 + vendor 的官方 SDK + modernc.org/sqlite）
 //
 // # 侧车 RPC 一览
 //

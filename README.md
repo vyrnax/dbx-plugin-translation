@@ -1,4 +1,4 @@
-# 翻译助手（DBX 插件）
+# Translation 即时翻译（DBX 插件）
 
 多引擎翻译插件，运行在 [DBX](https://dbxio.com) 宿主里。支持 **OpenAI 兼容大模型**（DeepSeek、通义千问、智谱、Kimi、Ollama、vLLM、LM Studio…）、**DeepL**、**百度**、**有道**、**阿里云**与**本地 CLI 代理**（claude / codex），含流式输出、输入即译、引擎管理与翻译历史。
 
@@ -62,8 +62,8 @@ dbx-plugin-translation/
 │   ├── engines.js         # 引擎管理：schema 驱动的动态表单
 │   ├── history.js         # 历史：分页、搜索、收藏、删除
 │   ├── storage.js         # 桥接层：invoke/onEvent、超时、诊断、看门狗、rev 管理
-│   ├── i18n.js            # zh-CN / en 双语字典
-│   └── styles.css         # 明暗双主题
+│   ├── i18n.js            # zh-CN / en 双语字典（语言跟随宿主 dbxPlugin.locale）
+│   └── styles.css         # 明暗双主题 + 消费宿主 --color-*/--font-*/--radius-* token
 ├── backend/               # 原生侧车（Go）
 │   ├── main.go            # RPC 分发、流式任务表、生命周期
 │   ├── dbxsdk/            # vendor 的官方 Go SDK（sdk.go + VENDOR.md）
@@ -148,7 +148,49 @@ translate/error  { taskId, code, message }
 
 ---
 
-## 4. 密钥安全模型
+## 4. 主题、字体与语言：一律跟随宿主 DBX
+
+本插件**不提供**任何主题或语言的手动设置项 —— 三者全部实时跟随 DBX，在 DBX 里改了立即生效，无需重开工作台。
+
+| 跟随项 | 宿主投递形式 | 本插件的消费方式 |
+|---|---|---|
+| 浅色 / 深色 | `theme.appearance` | 设 `body[data-theme]`，切换 CSS 里两套兜底变量 |
+| 调色板与自定义配色 | `--color-*` tokens | 经 `HOST_TOKEN_MAP` 映射到本项目语义变量（`--bg`/`--panel`/`--text`/`--primary`…） |
+| 圆角风格 | `--radius-*` tokens | 映射到 `--radius` / `--radius-sm` |
+| UI 字体 | `--font-sans` token | CSS 用 `var(--font-sans, 兜底字体栈)` |
+| 编辑器（等宽）字体 | `--font-mono` token + `theme.editor.fontFamily` | CSS 用 `var(--font-mono, 兜底等宽栈)` |
+| 界面语言 | `dbxPlugin.locale` | `i18n.js` 归一化后选 zh-CN 或 en 字典 |
+
+**字号不跟随**：官方文档明确「字体&字号类关注点归插件所有，宿主不规定你的字号」。`theme.editor.fontSize` 是编辑器字号，UI 正文仍由插件自定为 14px。
+
+### 4.1 两个实现要点
+
+**① `dbx-plugin-env` 必须用 capture 注册。** 新版宿主把该事件 target 在 `document` 上且**不冒泡**，注册在 `window` 冒泡阶段的监听器永远收不到：
+
+```js
+window.addEventListener("dbx-plugin-env", onEnv, true);    // capture
+document.addEventListener("dbx-plugin-env", onEnv, true);  // 双注册兼容新旧宿主
+```
+
+漏掉的症状是「DBX 切了主题，插件界面纹丝不动」，而**开发宿主测不出来**（它在 iframe 内 `dispatchEvent`，会冒泡），装进桌面端才暴露。另加 `onInit` 兜底，因为某些宿主桥接就绪时只发 init 不发 env。
+
+**② 宿主 token 名与本项目变量名对不上，必须做映射。** 本项目 CSS 用 `--bg`/`--panel`/`--text`，宿主投递的是 `--color-background`/`--color-card`/`--color-foreground`。不映射的话 token 投递了也没人消费，用户在 DBX 里自定义的主色、边框色、圆角全都传不进来（只有明暗切换生效，因为 CSS 里有两套兜底值）。
+
+映射目标必须在 CSS 里**真实定义且被 `var()` 消费**，否则映射写了等于没写 —— `_verify.mjs` 会解析 `HOST_TOKEN_MAP` 的每一对逐个核对。
+
+### 4.2 开发宿主的局限
+
+`dbx-plugin dev` 只投递 **15 个 token**（`--color-*` 与 `--radius-*`），**不含 `--font-*`**（已实测确认）。因此：
+
+- 调色板与圆角跟随 → 开发宿主可验证
+- **字体跟随 → 只能在桌面端验证**，开发宿主里永远走兜底字体栈
+- 语言跟随 → 开发宿主可在调试页切换语言验证
+
+设置页的「外观（跟随宿主）」组是**只读展示**，显示当前跟随到的主题、语言、UI 字体与宿主投递的 token 数量，便于确认插件确实跟上了 DBX 的设置。
+
+---
+
+## 5. 密钥安全模型
 
 **分层策略**：
 
@@ -172,15 +214,15 @@ translate/error  { taskId, code, message }
 
 ---
 
-## 5. 构建与打包
+## 6. 构建与打包
 
-### 5.1 前置
+### 6.1 前置
 
 - Go 1.21+（本机 1.27.3 @ `C:\develop\Go`），`GOPROXY=https://goproxy.cn,direct`
 - Node.js 18.18+（跑打包/校验脚本，只用内置模块，无需 `npm install`）
 - `@dbx-app/plugin-cli`（`dbx-plugin` 命令）
 
-### 5.2 开发调试
+### 6.2 开发调试
 
 ```bash
 # 编译侧车
@@ -199,7 +241,7 @@ dbx-plugin dev --path . --port 5190
 
 侧车日志在 `<数据目录>/sidecar-trace.log`（>64 KiB 自动截断，内容已脱敏）。前端诊断报告在「⋯ → 查看诊断报告」。
 
-### 5.3 一键出全平台包
+### 6.3 一键出全平台包
 
 ```bash
 node _release.mjs                       # 默认 5 个平台
@@ -212,7 +254,7 @@ node _release.mjs windows-x64 linux-x64 # 只做指定平台
 >
 > ⚠️ 交叉编译只保证**字节正确**，不等于在目标机上验证过。`darwin-*` / `linux-*` 包的侧车探针在校验阶段标记为 `SKIP`，**需在对应真机各跑一次冒烟**。
 
-### 5.4 测试
+### 6.4 测试
 
 ```bash
 # Go 单元测试（含 -race 并发检查）
@@ -229,7 +271,7 @@ go build -C backend -o dbx-plugin-translation.exe . && node _e2e.mjs
 node _verify.mjs
 ```
 
-### 5.5 版本号三处必须一致
+### 6.5 版本号三处必须一致
 
 改版本时同步这三处，`_buildpkg.js` 会做一致性闸门校验：
 
@@ -241,7 +283,7 @@ node _verify.mjs
 
 ---
 
-## 6. 发布到官方商店
+## 7. 发布到官方商店
 
 1. 在本仓库创建版本 Tag 与 GitHub Release，包含各平台未签名 `.dbxp`、对应 `.artifact.json`、汇总的 `release-candidates.json`、Release Notes（**`.dbxp` 不进 Git 历史**）
 2. `t8y2/dbx-store` 的同步 Workflow 读取最新 Release，自动创建或更新 `candidates/com.gaogao.translation.json` 候选 PR
@@ -254,6 +296,6 @@ node _verify.mjs
 
 ---
 
-## 7. 许可
+## 8. 许可
 
 Apache-2.0

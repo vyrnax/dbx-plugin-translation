@@ -181,6 +181,15 @@ async function main() {
       `${init.result?.plugin?.version} vs ${mani.version}`);
     check("capabilities 非空", Array.isArray(init.result?.capabilities) && init.result.capabilities.length > 0,
       JSON.stringify(init.result?.capabilities));
+    check("manifest.name 为「Translation 即时翻译」", mani.name === "Translation 即时翻译", mani.name);
+    check("localizations.en.name 为英文", mani.localizations?.en?.name === "Translation",
+      mani.localizations?.en?.name);
+    check(".dbx-store.json 的 name 与 manifest 一致", (() => {
+      try {
+        const pub = JSON.parse(fs.readFileSync(path.join(ROOT, ".dbx-store.json"), "utf8"));
+        return pub.name === mani.name;
+      } catch { return false; }
+    })());
 
     // ---------- 2) ping ----------
     console.log("\n=== 2. translate/ping ===");
@@ -361,6 +370,21 @@ async function main() {
     check("偏好往返一致（debounce=900）", prefsBack?.instantDebounceMs === 900, String(prefsBack?.instantDebounceMs));
     check("偏好往返一致（lastView=history）", prefsBack?.lastView === "history", prefsBack?.lastView);
     check("未写入的偏好保持默认（historyLimit=500）", prefsBack?.historyLimit === 500, String(prefsBack?.historyLimit));
+
+    // 外观与语言偏好：主题/字体/语言一律跟随宿主，【不应入库】。
+    // 尝试写入 themeOverride / uiLocale，确认它们被白名单拒绝，
+    // 同时夹带的合法键不受影响。
+    const idApp = send(proc, "prefs/set", {
+      prefs: { themeOverride: "dark", uiLocale: "en", instantDebounceMs: 800 }, rev: -1,
+    });
+    await waitFor(() => replies.has(idApp), 10000, "外观偏好 set 响应");
+    const appBack = replies.get(idApp).result?.prefs || {};
+    check("themeOverride 被拒绝入库（主题跟随宿主）",
+      appBack.themeOverride === undefined, String(appBack.themeOverride));
+    check("uiLocale 被拒绝入库（语言跟随宿主）",
+      appBack.uiLocale === undefined, String(appBack.uiLocale));
+    check("夹带的合法键仍正常保存",
+      appBack.instantDebounceMs === 800, String(appBack.instantDebounceMs));
 
     // 非法值应被夹到范围
     const idClamp = send(proc, "prefs/set", { prefs: { instantDebounceMs: 999999 }, rev: -1 });

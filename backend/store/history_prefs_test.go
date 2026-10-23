@@ -601,6 +601,76 @@ func TestPrefs_NaNAndInf(t *testing.T) {
 	}
 }
 
+// TestPrefs_AppearanceKeysRejected 验证主题与语言偏好键被【拒绝入库】。
+//
+// 设计决策：主题、字体、界面语言一律跟随宿主 DBX，不提供手动覆盖，
+// 因此 themeOverride / uiLocale 不在 prefKeys 白名单里。
+//
+// 为什么必须显式测试「被拒绝」而不是「不存在」：
+//
+//	如果哪天有人顺手把这两个键加回白名单，前端却已经不再读它们
+//	（applyTheme 只认宿主 token），就会产生「设置里存了值但界面不生效」
+//	的幽灵配置。这个测试把「外观不入库」固化成契约，防止回退。
+func TestPrefs_AppearanceKeysRejected(t *testing.T) {
+	s := newTestStore(t)
+	// 尝试写入外观键
+	_, _, err := s.SetPrefs(map[string]any{
+		"themeOverride":     "dark",
+		"uiLocale":          "en",
+		"instantDebounceMs": 800, // 夹带一个合法键，确认合法键不受影响
+	}, -1)
+	if err != nil {
+		t.Fatalf("写入失败: %v", err)
+	}
+	prefs, _ := s.GetPrefs()
+	// 外观键不应出现在结果里（既不在白名单，也不在默认值）
+	if _, ok := prefs["themeOverride"]; ok {
+		t.Error("themeOverride 不应入库（主题跟随宿主，无手动覆盖）")
+	}
+	if _, ok := prefs["uiLocale"]; ok {
+		t.Error("uiLocale 不应入库（语言跟随宿主，无手动覆盖）")
+	}
+	// 合法键正常保存
+	if !numEq(prefs["instantDebounceMs"], 800) {
+		t.Errorf("合法键应正常保存，instantDebounceMs = %v", prefs["instantDebounceMs"])
+	}
+	// 库里不应有外观键的行
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM prefs WHERE key IN ('themeOverride','uiLocale')`).Scan(&n); err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("prefs 表里不应有外观键，却有 %d 行", n)
+	}
+}
+
+// TestPrefs_NoAppearanceDefaults 验证默认值里【不含】外观键。
+//
+// 与上一个测试互补：一个查「写入被拒」，一个查「默认值也没有」，
+// 两者都成立才能保证外观配置彻底不落库。
+func TestPrefs_NoAppearanceDefaults(t *testing.T) {
+	for _, key := range []string{"themeOverride", "uiLocale"} {
+		if _, ok := PrefDefaults[key]; ok {
+			t.Errorf("PrefDefaults 不应含 %s（外观跟随宿主）", key)
+		}
+		if prefKeys[key] {
+			t.Errorf("prefKeys 白名单不应含 %s", key)
+		}
+	}
+	// GetPrefs 返回的完整偏好里也不应有外观键
+	s := newTestStore(t)
+	prefs, err := s.GetPrefs()
+	if err != nil {
+		t.Fatalf("读取失败: %v", err)
+	}
+	if _, ok := prefs["themeOverride"]; ok {
+		t.Error("GetPrefs 不应返回 themeOverride")
+	}
+	if _, ok := prefs["uiLocale"]; ok {
+		t.Error("GetPrefs 不应返回 uiLocale")
+	}
+}
+
 // TestPrefs_KnownViews 验证 lastView 只接受已知视图名。
 func TestPrefs_KnownViews(t *testing.T) {
 	for _, v := range []string{"translate", "engines", "history", "settings"} {

@@ -1,5 +1,5 @@
 /*
- * 翻译助手 —— 桥接层（严格按 DBX 官方插件 SDK 的桥接语义实现）
+ * Translation 即时翻译 —— 桥接层（严格按 DBX 官方插件 SDK 的桥接语义实现）
  * ==========================================================================
  *
  * 官方 SDK 定义的 window.dbxPlugin 形状：
@@ -130,7 +130,7 @@
   function report() {
     var st = status;
     var L = [];
-    L.push("=== DBX 翻译助手 · 诊断报告 ===");
+    L.push("=== DBX Translation 即时翻译 · 诊断报告 ===");
     L.push("时间：" + new Date().toLocaleString("zh-CN"));
     L.push("UI 版本：" + UI_VERSION);
     L.push("页面：" + (function () { try { return String(location.href); } catch (e) { return "?"; } })());
@@ -517,6 +517,24 @@
     // --- 事件（流式翻译）---
     onSidecarEvent: onSidecarEvent,
 
+    // onInit 订阅宿主的 init 消息。
+    //
+    // 为什么需要它：某些宿主在桥接就绪时只发 init 不发 env，
+    // 若只监听 dbx-plugin-env，首屏就可能用错主题/语言。
+    // 老宿主没有该方法，调用方必须 try/catch 包住。
+    //
+    // 返回取消订阅函数（宿主没提供时返回空函数，保证调用方无需判空）。
+    onInit: function (fn) {
+      if (typeof fn !== "function") { return function () {}; }
+      if (api && typeof api.onInit === "function") {
+        try {
+          var off = api.onInit(fn);
+          return (typeof off === "function") ? off : function () {};
+        } catch (e) { return function () {}; }
+      }
+      return function () {};
+    },
+
     // --- 元信息 ---
     getSchema: function () { return rpc("translate/schema", {}, RPC_TIMEOUT); },
 
@@ -575,6 +593,9 @@
     hasHostSave: function () { return !!(api && typeof api.saveFile === "function"); },
     saveFile: function (fileName, contentType, bytes) { return hostSaveFile(fileName, contentType, bytes); },
     theme: function () { return readTheme(); },
+    // themeObject 返回完整主题负载 { appearance, tokens, editor }，
+    // 供 app.js 的 applyTheme 把宿主的颜色/字体/圆角 token 应用到文档根元素。
+    themeObject: function () { return readThemeObject(); },
     locale: function () { try { return (api && api.locale) || "zh-CN"; } catch (e) { return "zh-CN"; } }
   };
 
@@ -611,20 +632,40 @@
 
   /* ============ 主题 ============ */
 
-  // readTheme 读宿主主题，兼容「属性」与「函数」两种形态。
+  // readThemeObject 读宿主的【完整】主题负载，兼容「属性」与「函数」两种形态。
   //
-  // 不同宿主版本实现不同：有的把 theme 做成 getter 返回对象
-  // （{appearance, tokens, editor}），有的做成函数。两种都要接。
-  function readTheme() {
+  // 官方文档说明 env 消息的 theme 结构为 { appearance, tokens, editor? }：
+  //   - appearance 是 "light" | "dark"
+  //   - tokens 是按前缀扫取的根节点设计变量（--color-*、--radius-*、--font-*）
+  //   - editor 是 SQL 编辑器设置的结构化快照（含 fontFamily / fontSize / theme）
+  //
+  // 不同宿主版本实现不同：有的把 theme 做成 getter 返回对象，有的做成函数，
+  // 老宿主甚至只返回 "dark"/"light" 字符串。三种形态都要接，
+  // 统一归一成 { appearance, tokens, editor } 结构，缺失的字段给安全默认值。
+  function readThemeObject() {
+    var fallback = { appearance: "light", tokens: {}, editor: null };
     try {
-      if (!api || !api.theme) { return "light"; }
+      if (!api || !api.theme) { return fallback; }
       var th = api.theme;
       if (typeof th === "function") { th = th(); }
-      if (th && typeof th === "object") {
-        return th.appearance === "dark" ? "dark" : "light";
+      // 老宿主：theme 直接是 "dark"/"light" 字符串
+      if (typeof th === "string") {
+        return { appearance: th === "dark" ? "dark" : "light", tokens: {}, editor: null };
       }
-      return th === "dark" ? "dark" : "light";
-    } catch (e) { return "light"; }
+      if (th && typeof th === "object") {
+        return {
+          appearance: th.appearance === "dark" ? "dark" : "light",
+          tokens: (th.tokens && typeof th.tokens === "object") ? th.tokens : {},
+          editor: (th.editor && typeof th.editor === "object") ? th.editor : null
+        };
+      }
+      return fallback;
+    } catch (e) { return fallback; }
+  }
+
+  // readTheme 只返回外观字符串，供不需要 tokens 的调用方使用（向后兼容）。
+  function readTheme() {
+    return readThemeObject().appearance;
   }
 
   /* ============ 剪贴板降级 ============ */

@@ -52,7 +52,7 @@ func (s *secretTool) Protect(plaintext []byte) (string, error) {
 	// 密钥内容从 stdin 读入（而不是命令行参数），避免出现在 ps 输出里 ——
 	// 命令行参数对同一台机器上的所有用户都可见，这是真实的泄露渠道。
 	cmd := exec.Command("secret-tool", "store",
-		"--label=DBX 翻译助手 API Key",
+		"--label=DBX Translation 即时翻译 API Key",
 		"service", s.attribute,
 		"account", account,
 	)

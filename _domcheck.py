@@ -124,6 +124,8 @@ CRITICAL = [
     "set-instant-maxlength", "set-stream-enabled", "set-chunk-delay",
     "set-history-limit", "set-default-source", "set-default-target",
     "btn-save-settings", "settings-status",
+    # 外观只读展示（跟随宿主，无手动覆盖控件）
+    "info-theme", "info-locale", "info-font", "info-token-count",
     "info-datadir", "info-dbpath", "info-version", "info-secret",
     "btn-reconnect", "btn-settings-export", "btn-settings-import", "btn-settings-diag",
     # 警示条

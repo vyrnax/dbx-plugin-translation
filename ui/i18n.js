@@ -1,5 +1,5 @@
 /*
- * 翻译助手 —— 界面国际化
+ * Translation 即时翻译 —— 界面国际化
  * ==========================================================================
  * 为什么前端要自建 i18n：
  *
@@ -18,7 +18,7 @@
 
   var dict = {
     "zh-CN": {
-      appTitle: "翻译助手",
+      appTitle: "Translation 即时翻译",
       viewTranslate: "翻译",
       viewEngines: "引擎",
       viewHistory: "历史",
@@ -96,6 +96,16 @@
 
       // 设置页
       settings: "设置",
+      groupAppearance: "外观（跟随宿主）",
+      appearanceFollowNote: "主题、字体与界面语言均自动跟随 DBX 的设置，在 DBX 中修改后本插件会实时同步，无需在此配置。",
+      currentTheme: "当前主题",
+      currentLocale: "界面语言",
+      currentFont: "UI 字体",
+      hostTokens: "宿主主题变量",
+      followHost: "跟随宿主",
+      fontFollowHost: "跟随宿主（未投递字体变量）",
+      themeLight: "浅色",
+      themeDark: "深色",
       groupInstant: "输入即译",
       groupTranslate: "翻译行为",
       groupHistory: "历史",
@@ -116,6 +126,8 @@
       dbFile: "数据库文件",
       sidecarVersion: "侧车版本",
       secretScheme: "密钥保护方案",
+      secretSecureYes: "（系统密钥库，真加密）",
+      secretSecureNo: "（机器绑定混淆，安全性较低）",
       saveSettings: "保存设置",
       settingsSaved: "设置已保存",
       reconnect: "重新连接侧车",
@@ -160,7 +172,7 @@
     },
 
     "en": {
-      appTitle: "Translation Assistant",
+      appTitle: "Translation",
       viewTranslate: "Translate",
       viewEngines: "Engines",
       viewHistory: "History",
@@ -234,6 +246,16 @@
       pageInfo: "Page {cur} / {total}, {n} entries",
 
       settings: "Settings",
+      groupAppearance: "Appearance (follows host)",
+      appearanceFollowNote: "Theme, fonts and interface language all follow DBX automatically. Changes in DBX are picked up live; nothing to configure here.",
+      currentTheme: "Current theme",
+      currentLocale: "Interface language",
+      currentFont: "UI font",
+      hostTokens: "Host theme tokens",
+      followHost: "follows host",
+      fontFollowHost: "Follows host (no font token delivered)",
+      themeLight: "Light",
+      themeDark: "Dark",
       groupInstant: "Translate as you type",
       groupTranslate: "Translation behaviour",
       groupHistory: "History",
@@ -254,6 +276,8 @@
       dbFile: "Database file",
       sidecarVersion: "Sidecar version",
       secretScheme: "Key protection",
+      secretSecureYes: "(OS keychain, real encryption)",
+      secretSecureNo: "(machine-bound obfuscation, less secure)",
       saveSettings: "Save settings",
       settingsSaved: "Settings saved",
       reconnect: "Reconnect sidecar",
@@ -297,18 +321,29 @@
 
   var current = "zh-CN";
 
-  // detect 从宿主读取语言，并归一到字典支持的键。
+  // normalize 把任意语言标识归一到字典支持的键。
   //
-  // 宿主可能给 "zh-CN"、"zh"、"en-US"、"en" 等形态，
+  // 宿主可能给 "zh-CN"、"zh"、"zh-TW"、"en-US"、"en" 等形态，
   // 归一化规则：以 zh 开头一律用 zh-CN，其余非中文一律用 en。
   // 这样即使宿主给出 "zh-TW" 也有合理回退，不会整页变成键名。
+  function normalize(loc) {
+    var low = String(loc || "").toLowerCase();
+    if (low.indexOf("zh") === 0) { return "zh-CN"; }
+    if (low.indexOf("en") === 0) { return "en"; }
+    return "";   // 无法识别 → 交给调用方决定回退
+  }
+
+  // detect 决定当前语言：完全跟随宿主，无法识别时回退 zh-CN。
+  //
+  // 【不提供手动覆盖】—— 界面语言一律跟随 DBX（用户明确要求）。
+  // 用户在 DBX 里切了语言，本插件通过 dbx-plugin-env 事件实时同步。
   function detect() {
-    var loc = "zh-CN";
+    var hostLoc = "";
     try {
-      if (window.dbxPlugin && window.dbxPlugin.locale) { loc = String(window.dbxPlugin.locale); }
+      if (window.dbxPlugin && window.dbxPlugin.locale) { hostLoc = String(window.dbxPlugin.locale); }
     } catch (e) { /* 忽略 */ }
-    var low = loc.toLowerCase();
-    current = (low.indexOf("zh") === 0) ? "zh-CN" : "en";
+    // 宿主给了无法识别的值时回退 zh-CN（本插件的主要用户是中文开发者）
+    current = normalize(hostLoc) || "zh-CN";
     return current;
   }
 
@@ -354,6 +389,15 @@
   I18N.apply = apply;
   I18N.locale = function () { return current; };
   I18N.has = function (loc) { return !!dict[loc]; };
+  // hostLocale 返回宿主当前语言（归一化后），供设置页只读展示与诊断日志使用。
+  I18N.hostLocale = function () {
+    try {
+      if (window.dbxPlugin && window.dbxPlugin.locale) {
+        return normalize(String(window.dbxPlugin.locale)) || String(window.dbxPlugin.locale);
+      }
+    } catch (e) { /* 忽略 */ }
+    return "";
+  };
 
   // 便捷全局别名：界面代码里大量使用，短名字更清爽
   window.t = t;

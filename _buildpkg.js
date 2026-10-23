@@ -168,6 +168,8 @@ const CRITICAL = [
   "btn-engine-save", "btn-engine-test", "btn-engine-cancel", "btn-engine-delete",
   "history-list", "history-empty", "history-search", "btn-clear-history",
   "btn-save-settings", "settings-status",
+  // 外观只读展示（跟随宿主，无手动覆盖控件）
+  "info-theme", "info-locale", "info-font", "info-token-count",
   "banner-not-persistent", "banner-insecure-secret", "btn-banner-retry",
   "more-menu", "btn-more", "btn-export", "btn-import", "btn-diag",
   "confirm-modal", "confirm-title", "confirm-lines", "btn-confirm-yes", "btn-confirm-no",

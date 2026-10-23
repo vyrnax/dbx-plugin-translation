@@ -318,6 +318,53 @@ const checks = [
     /\[hidden\]\s*\{[^}]*display:\s*none/.test(cs)],
   ["明暗双主题齐备", cs.includes(":root") && /body\[data-theme="dark"\]/.test(cs)],
 
+  /* ---- 主题/字体跟随宿主（对齐 dbx-plugin-toolbox 的 applyTheme 行为）---- */
+  // env 事件必须用 capture 注册：新版宿主把 dbx-plugin-env 的 target 放在
+  // document 上且【不冒泡】，注册在 window 冒泡阶段的监听器永远收不到。
+  // 漏掉的症状是「DBX 切了主题，插件界面纹丝不动」，且开发宿主可能行为不同，
+  // 本地测不出来、装进桌面端才暴露。
+  ["env 事件用 capture 注册（否则收不到 target=document 的不冒泡事件）",
+    /addEventListener\(\s*"dbx-plugin-env"[^)]*,\s*true\s*\)/.test(ap)],
+  ["env 事件同时注册在 window 与 document（兼容新旧宿主）",
+    /window\.addEventListener\(\s*"dbx-plugin-env"/.test(ap) &&
+    /document\.addEventListener\(\s*"dbx-plugin-env"/.test(ap)],
+  ["applyTheme 读取完整主题负载（含 tokens），而非只读 appearance 字符串",
+    /themeObject/.test(ap) && /flattenTokens/.test(ap)],
+  ["applyTheme 把宿主 token 写到文档根元素（setProperty）",
+    /root\.style\.setProperty/.test(ap)],
+  ["applyTheme 清理不再投递的旧 token（removeProperty，防主题切换后残留）",
+    /root\.style\.removeProperty/.test(ap)],
+  ["字体跟随宿主：CSS 用 var(--font-sans/--font-mono) 而非写死字体栈",
+    /var\(--font-sans/.test(cs) && /var\(--font-mono/.test(cs)],
+  ["宿主调色板映射到本项目语义变量（HOST_TOKEN_MAP）",
+    /HOST_TOKEN_MAP/.test(ap)],
+  // 映射目标必须在 CSS 里真实定义且被消费，否则映射是无效的
+  // （曾经出现过映射到 --primary-fg 但 CSS 里根本没这个变量、
+  //   按钮仍硬编码 color:#fff 的情况，映射写了等于没写）
+  ["HOST_TOKEN_MAP 的每个目标变量都在 CSS 中定义", (() => {
+    const i = ap.indexOf("var HOST_TOKEN_MAP = [");
+    if (i < 0) return false;
+    const block = ap.slice(i, ap.indexOf("];", i));
+    const pairs = [...block.matchAll(/\["(--[a-z0-9-]+)",\s*"(--[a-z0-9-]+)"\]/g)];
+    if (!pairs.length) return false;
+    const defined = new Set([...cs.matchAll(/^\s*(--[a-z0-9-]+)\s*:/gm)].map((m) => m[1]));
+    return pairs.every((m) => defined.has(m[2]));
+  })()],
+  ["HOST_TOKEN_MAP 的每个目标变量都被 CSS 消费（var()）", (() => {
+    const i = ap.indexOf("var HOST_TOKEN_MAP = [");
+    if (i < 0) return false;
+    const block = ap.slice(i, ap.indexOf("];", i));
+    const pairs = [...block.matchAll(/\["(--[a-z0-9-]+)",\s*"(--[a-z0-9-]+)"\]/g)];
+    if (!pairs.length) return false;
+    const consumed = new Set([...cs.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]));
+    return pairs.every((m) => consumed.has(m[2]));
+  })()],
+  ["无硬编码白色前景（应走 --primary-fg 等变量，否则宿主换浅色主色时看不清）",
+    !/color:\s*#fff\b|color:\s*#ffffff/.test(cs)],
+  ["界面语言跟随宿主（i18n 从 dbxPlugin.locale 取，无手动覆盖入口）",
+    /dbxPlugin\.locale/.test(fs.readFileSync(path.join(ROOT, "ui/i18n.js"), "utf8")) &&
+    !/setOverride/.test(fs.readFileSync(path.join(ROOT, "ui/i18n.js"), "utf8"))],
+
   // 权限与贡献点
   ["权限最小化：声明了 host.events（流式硬依赖）",
     Array.isArray(mani.permissions) && mani.permissions.includes("host.events"), JSON.stringify(mani.permissions)],

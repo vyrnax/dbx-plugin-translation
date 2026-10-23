@@ -1,5 +1,5 @@
 /*
- * 翻译助手 —— 样式表
+ * Translation 即时翻译 —— 样式表
  * ==========================================================================
  * 主题策略：自带完整的明暗两套 CSS 变量，不依赖宿主变量穿透。
  *
@@ -31,17 +31,39 @@
   --primary: #3370ff;
   --primary-hover: #245bdb;
   --primary-weak: #e8f0ff;
+  /* 前景色变量：宿主投递 --color-primary-foreground 时会被 applyTheme 覆盖。
+     不硬编码 #fff 的原因：用户若把主色改成浅色（例如淡黄），
+     白色文字就会看不清；跟随宿主的 primary-foreground 才能保证对比度。 */
+  --primary-fg: #ffffff;
   --danger: #f5483b;
   --danger-weak: #fdecea;
+  --danger-fg: #ffffff;
   --warn: #ff9f0a;
   --warn-weak: #fff4e5;
   --ok: #34c759;
   --ok-weak: #e8f9ed;
+  --ok-fg: #ffffff;
   --shadow: 0 6px 24px rgba(20, 30, 50, .08);
   --shadow-sm: 0 2px 8px rgba(20, 30, 50, .06);
   --radius: 10px;
   --radius-sm: 6px;
-  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+
+  /* 字体：优先用宿主 DBX 投递的 --font-sans / --font-mono，
+     宿主没投递时（例如开发宿主）回退到下面的兜底字体栈。
+
+     为什么用 var(--font-sans, 兜底) 而不是直接写死字体：
+       applyTheme() 会把宿主 theme.tokens 里的 --font-sans / --font-mono
+       用 setProperty 写到文档根元素上，覆盖这里的兜底值。
+       这样用户在 DBX 设置里换了 UI 字体或编辑器字体，本插件会实时跟随。
+       兜底栈保证「宿主没投递」时界面仍是合理的系统字体，不会退化成衬线体。
+
+     注意：--font-sans / --font-mono 这两个变量名【不在这里定义默认值】，
+       而是留给 applyTheme 从宿主注入；这里只定义本项目自己的 --sans / --mono
+       作为「消费入口」，用 var() 的第二个参数提供兜底。 */
+  --sans: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI",
+              "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif);
+  --mono: var(--font-mono, ui-monospace, "SFMono-Regular", Consolas,
+              "Liberation Mono", Menlo, monospace);
 }
 
 body[data-theme="dark"] {
@@ -57,12 +79,15 @@ body[data-theme="dark"] {
   --primary: #5b8cff;
   --primary-hover: #7aa2ff;
   --primary-weak: #25304a;
+  --primary-fg: #10131a;
   --danger: #ff6b5e;
   --danger-weak: #3a2622;
+  --danger-fg: #1a0f0d;
   --warn: #ffb340;
   --warn-weak: #3a2f1c;
   --ok: #3fd17a;
   --ok-weak: #1e3327;
+  --ok-fg: #0d1a12;
   --shadow: 0 6px 24px rgba(0, 0, 0, .35);
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, .25);
 }
@@ -71,10 +96,13 @@ body[data-theme="dark"] {
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-               "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+  /* 用 --sans（= 宿主 --font-sans 或兜底栈），实现 UI 字体跟随宿主 */
+  font-family: var(--sans);
   background: var(--bg);
   color: var(--text);
+  /* 字号：宿主投递了 --editor-font-size 时不强制覆盖 body 字号，
+     因为编辑器字号是给等宽代码区用的，UI 正文仍用 14px 更合适。
+     官方文档也说明「字体&字号类关注点归插件所有：宿主不规定你的字号」。 */
   font-size: 14px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
@@ -223,7 +251,7 @@ body {
 /* ============ 按钮 ============ */
 button { font-family: inherit; }
 .primary {
-  border: 0; background: var(--primary); color: #fff;
+  border: 0; background: var(--primary); color: var(--primary-fg);
   padding: 7px 18px; border-radius: var(--radius-sm); cursor: pointer;
   font-size: 13px; font-weight: 500; transition: background .15s;
 }
@@ -246,7 +274,7 @@ button { font-family: inherit; }
 .outline:disabled { opacity: .5; cursor: not-allowed; }
 
 .danger {
-  border: 0; background: var(--danger); color: #fff;
+  border: 0; background: var(--danger); color: var(--danger-fg);
   padding: 7px 16px; border-radius: var(--radius-sm); cursor: pointer; font-size: 13px;
 }
 .danger:hover { filter: brightness(1.08); }
@@ -458,8 +486,8 @@ textarea.input { height: auto; padding: 8px 9px; line-height: 1.6; resize: verti
   z-index: 200; max-width: 80vw; text-align: center;
   animation: toast-in .18s ease-out;
 }
-.toast.error { background: var(--danger); color: #fff; }
-.toast.ok { background: var(--ok); color: #fff; }
+.toast.error { background: var(--danger); color: var(--danger-fg); }
+.toast.ok { background: var(--ok); color: var(--ok-fg); }
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(-50%) translateY(8px); }
   to { opacity: 1; transform: translateX(-50%) translateY(0); }

@@ -32,8 +32,17 @@ var prefKeys = map[string]bool{
 	"maxCharsPerReq": true,
 	// 历史
 	"historyLimit": true,
-	// 主题（跟随宿主时可留空）
-	"themeOverride": true,
+	// 【刻意没有】主题与语言的偏好键。
+	//
+	// 主题、字体、界面语言一律跟随宿主 DBX，不提供任何手动覆盖：
+	//   - 用户在 DBX 里切了深色主题或英文界面，期望所有面板一起变；
+	//     插件若自顾自保持另一套外观会显得割裂。
+	//   - 前端 applyTheme() 会把宿主投递的 --color-* / --font-* / --radius-*
+	//     token 应用到文档根元素，i18n 则从 dbxPlugin.locale 取语言，
+	//     两者都通过 dbx-plugin-env 事件实时刷新。
+	//
+	// 因此这两个值没有「持久化」的必要 —— 它们的唯一事实来源是宿主，
+	// 存进 prefs 反而会制造「设置里显示 A、界面实际是 B」的不一致。
 }
 
 // PrefDefaults 是偏好的默认值。
@@ -54,7 +63,6 @@ var PrefDefaults = map[string]any{
 	"chunkDelayMs":      1100, // 尊重百度/有道免费档 1 QPS
 	"maxCharsPerReq":    20000,
 	"historyLimit":      500, // 范围 100-5000
-	"themeOverride":     "",
 }
 
 // GetPrefs 返回全部偏好，缺失的键用默认值补齐。
@@ -178,7 +186,7 @@ func sanitizePrefs(in map[string]any) map[string]any {
 			if str, ok := v.(string); ok && isKnownView(str) {
 				out[k] = str
 			}
-		case "defaultSourceLang", "defaultTargetLang", "defaultEngineId", "themeOverride":
+		case "defaultSourceLang", "defaultTargetLang", "defaultEngineId":
 			if str, ok := v.(string); ok {
 				out[k] = strings.TrimSpace(str)
 			}
