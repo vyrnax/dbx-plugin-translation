@@ -361,7 +361,42 @@ const checks = [
   })()],
   ["无硬编码白色前景（应走 --primary-fg 等变量，否则宿主换浅色主色时看不清）",
     !/color:\s*#fff\b|color:\s*#ffffff/.test(cs)],
-  ["界面语言跟随宿主（i18n 从 dbxPlugin.locale 取，无手动覆盖入口）",
+  /* ---- 启动时序（三个真实事故固化成的闸门）---- */
+  // 事故1：E.init() 早于 S.init() 执行 → translate/schema 在桥接未就绪时失败
+  //        且永不重试 → 引擎管理页的「新建引擎」表单永远是空的。
+  ["E.init 在 S.init 之后调用（schema 加载依赖桥接就绪）",
+    ap.indexOf("E.init(onEnginesChanged)") > ap.indexOf("S.init().then(")],
+  // 事故2：rpcRaw 在桥接未就绪时直接 reject 而不等待 → 任何过早调用都永久失败
+  ["rpcRaw 桥接未就绪时等待而非直接 reject",
+    /waitBridge\(BRIDGE_TIMEOUT\)/.test(st) &&
+    !/if \(!api \|\| typeof api\.invoke !== "function"\) \{\s*return Promise\.reject/.test(st)],
+  // 事故3：detect() 只在 boot 开头跑一次，那时 init 消息还没到，
+  //        dbxPlugin.locale 是桥接闭包的初始值（en）而非真实值 → 界面永远英文。
+  ["S.init 完成后重新 detect 语言（否则读到的是 init 前的初始 locale）", (() => {
+    const i = ap.indexOf("S.init().then(");
+    const j = ap.indexOf("E.init(onEnginesChanged)");
+    if (i < 0 || j < 0 || j < i) return false;
+    return /TranslationI18N\.detect\(\)/.test(ap.slice(i, j));
+  })()],
+  ["S.init 完成后重新 applyI18N（重绘全部 data-i18n 节点）", (() => {
+    const i = ap.indexOf("S.init().then(");
+    const j = ap.indexOf("E.init(onEnginesChanged)");
+    if (i < 0 || j < 0 || j < i) return false;
+    return /applyI18N\(\)/.test(ap.slice(i, j));
+  })()],
+  ["E.init 的 Promise 有 catch（失败要提示用户，否则只看到空白弹框）",
+    /Promise\.resolve\(E\.init\([^)]*\)\)\.catch/.test(ap)],
+  // 事件通道有三重不确定性（新版 target=document 不冒泡 / 老版 target=window /
+  // 某些宿主只发 init 不发 env），轮询是廉价的静默失效兜底。
+  ["有 env 轮询兜底（事件通道不可靠时语言/主题仍能跟随）",
+    /startEnvPolling/.test(ap) && /setInterval/.test(ap)],
+  ["轮询与事件处理器共享指纹（避免重复重绘）",
+    (ap.match(/lastEnvSignature = envSignature\(\)/g) || []).length >= 2],
+  ["诊断报告含界面语言与宿主 locale（排查「语言没跟随」的关键证据）",
+    /界面语言=/.test(st) && /dbxPlugin\.locale=/.test(st)],
+  ["诊断报告含主题 appearance 与 token 数量",
+    /tokens=/.test(st) && /body\[data-theme\]=/.test(st)],
+    ["界面语言跟随宿主（i18n 从 dbxPlugin.locale 取，无手动覆盖入口）",
     /dbxPlugin\.locale/.test(fs.readFileSync(path.join(ROOT, "ui/i18n.js"), "utf8")) &&
     !/setOverride/.test(fs.readFileSync(path.join(ROOT, "ui/i18n.js"), "utf8"))],
 

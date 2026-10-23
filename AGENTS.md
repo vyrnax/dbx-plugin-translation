@@ -649,6 +649,10 @@ var RPC_TIMEOUT = 30000, READY_TIMEOUT = 8000, CTX_TIMEOUT = 2500,
 | `localizations` 里给 menus 本地化 label 是死配置 | menus 没有 label 字段，本地化条目无处生效 | 只为「有 `label`/`description` 的贡献点」要求本地化覆盖；反向加死条目闸门 |
 | `_buildpkg.js` 报 `Invalid regular expression: Unterminated group` | 正则**字面量**里出现裸 `/`（如 `https://`、`(?!.*//)`）会提前终止字面量 | 含 `/` 的 pattern 一律用 `new RegExp("字符串")`，字符串里只需按普通规则转义一次 |
 
+| 界面语言永远是英文，切宿主语言没反应（主题却正常） | `detect()` 只在 `boot()` 开头跑一次，那时宿主的 **init 消息还没到达**，`dbxPlugin.locale` 返回的是桥接闭包的**初始值**（en）；init 之后 locale 才更新为真实值，但再没重新探测过。主题之所以正常，是因为 `S.init().then()` 里调了 `applyTheme()` 却漏了对应的 `detect()` + `applyI18N()` | `S.init()` 完成后**必须重新** `detect()` + `applyI18N()`。诊断报告里同时打印「界面语言 / 宿主 locale / `dbxPlugin.locale`」三个值，一眼就能区分是「宿主没投递」还是「插件没读取」 |
+| `translate/schema` 加载失败，引擎管理页「新建引擎」表单是空的 | `E.init()` 在 `S.init()` **之前**执行，此时桥接未就绪，`rpcRaw` 直接 reject 且**永不重试** | ① `rpcRaw` 改为桥接未就绪时先 `waitBridge()` 再调用；② `E.init()`/`H.init()` 移到 `S.init().then()` 内；③ `E.init()` 的 Promise 加 catch 并 toast 提示（否则用户只看到空白弹框，不知道是 schema 没加载） |
+| 语言/主题跟随「有时生效有时不生效」 | 事件通道有三重不确定性：新版宿主 target=document 且不冒泡、老宿主 target=window、某些宿主只发 init 不发 env。任一情况没覆盖就是静默失效 | 三重保险：window+document 双注册且都 capture、`onInit` 兜底、**1.5 秒低频轮询**（比较「locale+appearance+token 数」指纹，无变化则什么都不做）。轮询与事件处理器**共享指纹**，避免重复重绘 |
+
 **从这些坑里提炼的两条通用规则**（已并入铁律）：
 
 - **静态闸门的判据必须在 `_buildpkg.js` 与 `_verify.mjs` 之间保持一致**，且都要先剥离注释再扫描。两份闸门判据不一致会产生「本地打包通过、校验失败」的困惑。
@@ -657,6 +661,8 @@ var RPC_TIMEOUT = 30000, READY_TIMEOUT = 8000, CTX_TIMEOUT = 2500,
 - **映射/别名类代码必须双向校验**：既校验「源存在」，也校验「目标被真实消费」。只写映射不核对目标，会产生「代码看起来对、界面就是不变」的静默失效。
 - **凡是「宿主只在某个阶段才校验」的契约，必须在本地提前校验**。manifest 字段白名单就是典型：打包阶段不报错、安装阶段才炸，而且一次只报一个错。把官方 schema 的约束抄进打包闸门，一次报完全部问题，比逐个试错省几倍时间。
 - **JS 正则字面量里不能出现裸 `/`**。含 URL 或 `//` 的 pattern 一律用 `new RegExp("...")`。
+- **凡是读「宿主桥接属性」的代码，都必须区分 init 前与 init 后**。`dbxPlugin.locale` / `.theme` / `.context` 在 init 消息到达前返回的是闭包初始值而非真实值。任何在 `boot()` 开头读它们的逻辑，都必须在 `ready` 之后**再读一次**。这类 bug 的症状是「某个功能永远停在默认值」，而且因为界面看起来完全正常，用户只会以为「插件不支持」。
+- **静默失效的功能要有主动兜底**。「语言/主题不跟随」不会报错、不会白屏，用户根本不会去报 bug，只会默默卸载。对这类功能，一层廉价的轮询（1.5 秒比较一次指纹）远比「相信事件一定会来」可靠。
 
 ### 6.9 网络与代理（国内环境）
 

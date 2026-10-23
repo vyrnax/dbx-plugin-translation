@@ -140,6 +140,22 @@
     L.push(envSnapshot());
     L.push("");
     L.push("--- 状态 ---");
+    // 语言与主题的实际生效值：排查「切换宿主语言/主题没反应」时，
+    // 这两行能直接区分是「宿主没投递」还是「插件没读取」。
+    try {
+      var I18N = window.TranslationI18N;
+      L.push("界面语言=" + (I18N ? I18N.locale() : "?") +
+        " · 宿主 locale=" + (I18N && I18N.hostLocale ? (I18N.hostLocale() || "(空)") : "?") +
+        " · dbxPlugin.locale=" + (function () {
+          try { return String(window.dbxPlugin && window.dbxPlugin.locale); } catch (e) { return "?"; }
+        })());
+    } catch (e) { L.push("界面语言=读取失败"); }
+    try {
+      var th = (typeof readThemeObject === "function") ? readThemeObject() : null;
+      L.push("主题=" + (th ? th.appearance : "?") +
+        " · tokens=" + (th && th.tokens ? Object.keys(th.tokens).length : 0) +
+        " · body[data-theme]=" + (document.body.dataset.theme || "(未设)"));
+    } catch (e) { /* 忽略 */ }
     L.push("backend=" + st.backend + " · persistent=" + st.persistent + " · ok=" + st.ok);
     L.push("hostAvailable=" + st.hostAvailable + " · sidecarAvailable=" + st.sidecarAvailable);
     L.push("sidecarVersion=" + (st.sidecarVersion || "(未知)"));
@@ -287,17 +303,35 @@
 
   /* ============ 侧车 RPC ============ */
 
+  // rpcRaw 发一次侧车调用。
+  //
+  // 【关键】桥接未就绪时先等待，而不是直接 reject。
+  //
+  // 为什么：宿主注入 window.dbxPlugin 的时机不确定，而 UI 的各模块
+  // （engines.js / history.js）可能在 init 完成前就发起调用。
+  // 直接 reject 会让这些调用【永久失败且无人重试】—— 本项目踩过：
+  // E.init() 早于 S.init() 执行，translate/schema 加载失败，
+  // 导致引擎管理页的新建表单永远是空的（没有字段可渲染）。
+  //
+  // 等待有上限（BRIDGE_TIMEOUT），超时才 reject，避免无限挂起。
   function rpcRaw(method, params, timeoutMs) {
-    if (!api || typeof api.invoke !== "function") {
-      return Promise.reject(new Error("侧车通道未就绪（宿主未提供 dbxPlugin.invoke）"));
-    }
-    var out;
-    try {
-      out = api.invoke(method, params || {}, { timeoutMs: timeoutMs || RPC_TIMEOUT });
-    } catch (e) {
-      return Promise.reject(new Error(method + " 调用失败：" + errText(e)));
-    }
-    return Promise.resolve(out);
+    var doCall = function () {
+      var out;
+      try {
+        out = api.invoke(method, params || {}, { timeoutMs: timeoutMs || RPC_TIMEOUT });
+      } catch (e) {
+        return Promise.reject(new Error(method + " 调用失败：" + errText(e)));
+      }
+      return Promise.resolve(out);
+    };
+    if (api && typeof api.invoke === "function") { return doCall(); }
+    // 桥接还没就绪：等它注入后再调用
+    return waitBridge(BRIDGE_TIMEOUT).then(function (a) {
+      if (!a || typeof a.invoke !== "function") {
+        throw new Error("侧车通道未就绪（宿主未提供 dbxPlugin.invoke）");
+      }
+      return doCall();
+    });
   }
 
   // rpc 在 rpcRaw 之上做三件事：

@@ -56,6 +56,14 @@
     bootDone: false
   };
 
+  /* ============ 宿主环境轮询状态 ============
+   * 声明放在这里（而非 startEnvPolling 附近），保证在任何使用点之前 ——
+   * var 提升虽然能让代码跑通，但「声明在使用之后」会让人误读执行顺序，
+   * 排查「轮询为什么没生效」时白白多花时间。
+   */
+  var envPollTimer = null;
+  var lastEnvSignature = "";
+
   /* ============ 安全 DOM 助手 ============ */
   function $(id) { return document.getElementById(id); }
   function val(id) { var e = $(id); return e ? e.value : ""; }
@@ -1238,6 +1246,9 @@
         renderEngineSelect();
         renderStatus();
         renderAppearanceInfo();
+        // 同步轮询指纹：否则轮询会在 1.5 秒后发现「指纹变了」再刷新一次，
+        // 造成重复重绘（虽然无害，但诊断日志里会出现两条相同记录，干扰排查）。
+        lastEnvSignature = envSignature();
         var hostLoc = (window.TranslationI18N && window.TranslationI18N.hostLocale)
           ? window.TranslationI18N.hostLocale() : "?";
         S.log("宿主环境变化", true,
@@ -1260,6 +1271,63 @@
         });
       } catch (e) { /* 老宿主无 onInit，忽略 */ }
     }
+
+    startEnvPolling();
+  }
+
+  /* ============ 环境轮询兜底 ============
+   *
+   * 为什么在已有 dbx-plugin-env 监听 + onInit 的情况下还要轮询：
+   *
+   *   事件通道有三重不确定性 —— 新版宿主把事件 target 在 document 且不冒泡、
+   *   老宿主 target 在 window、某些宿主桥接就绪时只发 init 不发 env。
+   *   我已经用「window + document 双注册 + capture + onInit」覆盖了已知情况，
+   *   但宿主行为没有文档保证，未来版本仍可能变。
+   *
+   *   而「语言/主题不跟随」的症状是【静默的】：界面看起来完全正常，
+   *   用户只会觉得「这插件不支持中文」，不会想到是事件没收到。
+   *   这类静默失效最难排查，值得用一层廉价的轮询兜底。
+   *
+   * 成本极低：每 1.5 秒读两个 getter（locale 与 theme.appearance）并比较，
+   *   没有变化就什么都不做。只有真的变了才触发重绘。
+   */
+  // envSignature 是「当前语言 + 外观 + token 数量」的指纹。
+  // 用 token 数量而非内容做比较：宿主换调色板时数量通常也会变，
+  // 而逐 token 深比较每 1.5 秒做一次太浪费。
+  function envSignature() {
+    var loc = "?", app = "?", n = 0;
+    try {
+      if (window.dbxPlugin) {
+        loc = String(window.dbxPlugin.locale || "");
+        var th = (S && typeof S.themeObject === "function") ? S.themeObject() : null;
+        if (th) {
+          app = th.appearance || "?";
+          n = th.tokens ? Object.keys(th.tokens).length : 0;
+        }
+      }
+    } catch (e) { /* 忽略 */ }
+    return loc + "|" + app + "|" + n;
+  }
+
+  function startEnvPolling() {
+    if (envPollTimer) { return; }
+    lastEnvSignature = envSignature();
+    envPollTimer = setInterval(function () {
+      try {
+        var sig = envSignature();
+        if (sig === lastEnvSignature) { return; }   // 无变化，什么都不做
+        lastEnvSignature = sig;
+        S.log("轮询发现宿主环境变化", true, "signature=" + sig);
+        // 与 env 事件走同一条刷新路径，保证行为一致
+        if (window.TranslationI18N) { window.TranslationI18N.detect(); }
+        applyI18N();
+        applyTheme();
+        renderLangSelects();
+        renderEngineSelect();
+        renderStatus();
+        renderAppearanceInfo();
+      } catch (e) { /* 轮询里的异常绝不能中断定时器 */ }
+    }, 1500);
   }
 
   // swapLang 交换源语言与目标语言。
@@ -1318,19 +1386,41 @@
     S.log("=== 应用启动 ===", null, "UI 版本 " + S.VERSION);
 
     // 1. 先渲染静态界面（不依赖任何异步结果）
+    //
+    // 注意：此时宿主的 init 消息可能还没到达，dbxPlugin.locale / theme
+    // 读到的是桥接闭包的【初始值】而非真实值。所以这里只是先画出一个
+    // 可用的界面，真正的语言与主题要在 S.init() 完成后【重新探测一次】。
     if (window.TranslationI18N) { window.TranslationI18N.detect(); }
     applyI18N();
     applyTheme();
     bindEvents();
     renderStatus();
 
-    if (E) { E.init(onEnginesChanged); }
-    if (H) { H.init(onReuseHistory); }
-
     // 2. 异步初始化桥接与数据
+    //
+    // E.init / H.init 必须放在 S.init() 【之后】：它们会立刻发起
+    // translate/schema 与 engines/list 调用，桥接未就绪时会失败。
+    // （storage.js 的 rpcRaw 现在会等待桥接，但顺序正确仍是更清晰的做法，
+    //   也能避免诊断日志里出现一堆无意义的 FAIL。）
     S.init().then(function () {
+      // 桥接就绪后【重新探测语言与主题】—— 这是修复「切换宿主语言没反应」的关键。
+      // init 消息到达时宿主才把真实 locale/theme 写进桥接闭包，
+      // 第 1 步读到的只是初始值（通常是 en / light）。
+      if (window.TranslationI18N) { window.TranslationI18N.detect(); }
+      applyI18N();
       renderStatus();
       applyTheme();
+
+      // E.init 会加载 translate/schema（引擎表单的字段定义来源）。
+      // 失败必须显式记录并提示：否则引擎管理页的「新建引擎」表单会是空的，
+      // 用户只看到一个空白弹框，完全不知道是 schema 没加载出来。
+      if (E) {
+        Promise.resolve(E.init(onEnginesChanged)).catch(function (err) {
+          S.log("加载引擎 schema 失败", false, (err && err.message) || String(err));
+          toast("引擎配置表单加载失败，请点击「重新连接侧车」后重试", "error", 6000);
+        });
+      }
+      if (H) { H.init(onReuseHistory); }
 
       // 桥接不可用：停在降级状态，界面已经渲染出来了，
       // 用户能看到红色警示条与诊断入口，不至于面对一片空白。
