@@ -78,6 +78,108 @@ func TestMap_KnownVectors(t *testing.T) {
 	}
 }
 
+// TestMapSource_NoRegionSuffixForDeepL 是【线上 bug 的回归测试】。
+//
+// DeepL 的 source_lang 与 target_lang 接受的取值集合不同：
+//
+//	target_lang 接受 EN-US / EN-GB / PT-PT / PT-BR（必须带地区后缀）
+//	source_lang 只接受 EN / PT（不带地区后缀）
+//
+// 原先 MapSource 与 MapTarget 共用一张表，于是英译中时发出
+// source_lang=EN-US，DeepL 返回 400 "Value for 'source_lang' not supported"。
+//
+// 这个 bug 极隐蔽：英译中失败、中译英正常（ZH 在两个位置都合法），
+// 看起来像"偶发故障"。用户填了正确的 Key，用官方 curl 示例（不带
+// source_lang）能成功，但插件里点「测试连接」必失败 —— 因为探测固定用 en→zh。
+func TestMapSource_NoRegionSuffixForDeepL(t *testing.T) {
+	cases := []struct {
+		code       string
+		wantSource string // 源语言位置：不带地区后缀
+		wantTarget string // 目标语言位置：带地区后缀
+	}{
+		{"en", "EN", "EN-US"},
+		{"pt", "PT", "PT-PT"},
+		// 无地区后缀差异的语言，两个位置应相同
+		{"zh", "ZH", "ZH"},
+		{"ja", "JA", "JA"},
+		{"de", "DE", "DE"},
+		{"no", "NB", "NB"},
+	}
+	for _, c := range cases {
+		src, okS := MapSource("deepl", c.code)
+		if !okS {
+			t.Errorf("MapSource(deepl, %q) 返回 ok=false", c.code)
+			continue
+		}
+		if src != c.wantSource {
+			t.Errorf("MapSource(deepl, %q) = %q, 期望 %q（source_lang 不接受地区后缀，"+
+				"否则 DeepL 返回 400）", c.code, src, c.wantSource)
+		}
+		dst, okT := MapTarget("deepl", c.code)
+		if !okT {
+			t.Errorf("MapTarget(deepl, %q) 返回 ok=false", c.code)
+			continue
+		}
+		if dst != c.wantTarget {
+			t.Errorf("MapTarget(deepl, %q) = %q, 期望 %q（target_lang 需要地区后缀）",
+				c.code, dst, c.wantTarget)
+		}
+		// 核心不变量：源语言位置绝不能出现带地区后缀的值
+		if src == "EN-US" || src == "EN-GB" || src == "PT-PT" || src == "PT-BR" {
+			t.Errorf("MapSource(deepl, %q) 返回了带地区后缀的 %q，DeepL 会拒绝", c.code, src)
+		}
+	}
+}
+
+// TestMapSource_OverridesDoNotAffectOtherEngines 验证源语言覆盖表只影响声明过的引擎。
+//
+// sourceOverrides 是全局表，若实现有误（例如覆盖了主映射表），
+// 会让其它引擎的目标语言也跟着变，产生"修一个坏三个"的后果。
+func TestMapSource_OverridesDoNotAffectOtherEngines(t *testing.T) {
+	// 百度/有道/阿里/腾讯/Google 的 en 在源语言位置应保持各自原有映射
+	cases := []struct{ kind, want string }{
+		{"baidu", "en"},
+		{"youdao", "en"},
+		{"aliyun", "en"},
+		{"tencent", "en"},
+		{"google", "en"},
+		{"openai", "English"},
+	}
+	for _, c := range cases {
+		src, ok := MapSource(c.kind, "en")
+		if !ok {
+			t.Errorf("MapSource(%q, en) 返回 ok=false", c.kind)
+			continue
+		}
+		if src != c.want {
+			t.Errorf("MapSource(%q, en) = %q, 期望 %q（源语言覆盖表不应影响该引擎）",
+				c.kind, src, c.want)
+		}
+		// 目标语言位置也必须与源语言一致（这些引擎没有地区后缀差异）
+		dst, _ := MapTarget(c.kind, "en")
+		if dst != src {
+			t.Errorf("引擎 %q 的 en 在源/目标位置应相同，得到 src=%q dst=%q", c.kind, src, dst)
+		}
+	}
+}
+
+// TestMap_DeepLTargetStillHasRegion 验证目标语言位置【仍然】带地区后缀。
+//
+// 修复源语言时绝不能顺手把目标语言也改成 EN —— DeepL 的 target_lang
+// 要求明确地区变体，传 EN 会返回 400 "Value for 'target_lang' not supported"。
+func TestMap_DeepLTargetStillHasRegion(t *testing.T) {
+	dst, ok := MapTarget("deepl", "en")
+	if !ok {
+		t.Fatal("MapTarget(deepl, en) 返回 ok=false")
+	}
+	if dst != "EN-US" {
+		t.Errorf("MapTarget(deepl, en) = %q, 期望 EN-US（target_lang 必须带地区后缀）", dst)
+	}
+	if dst == "EN" {
+		t.Error("target_lang 不能是 EN：DeepL 要求明确 EN-US 或 EN-GB，否则 400")
+	}
+}
+
 // TestMap_Unsupported 验证不支持的组合返回 ok=false。
 // 这是 UI 禁用下拉项的依据，返回 true 会导致用户选了之后翻译失败。
 func TestMap_Unsupported(t *testing.T) {

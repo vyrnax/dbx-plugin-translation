@@ -381,6 +381,30 @@ var tencentMap = map[string]string{
 	"hi":    "hi",
 }
 
+// sourceOverrides 是【源语言位置】专用的映射覆盖表。
+//
+// 为什么需要它：某些引擎的 source_lang 与 target_lang 接受的取值集合【不同】。
+//
+// DeepL 是最典型的例子：
+//
+//	target_lang 接受 EN-US / EN-GB / PT-PT / PT-BR（必须带地区后缀，
+//	          因为要区分美式英式、欧葡巴葡）
+//	source_lang 只接受 EN / PT（【不带】地区后缀，因为源语言只需识别到语种）
+//
+// 共用一张表的后果是：把英语作为【源语言】时会发出 source_lang=EN-US，
+// DeepL 直接返回 400 "Value for 'source_lang' not supported"。
+// 这个 bug 的隐蔽之处在于 —— 英译中会失败，但中译英正常
+// （因为中文 ZH 在两个位置都合法），看起来像"偶发"故障。
+//
+// 本项目实测踩过：用户填了正确的 DeepL 免费 Key，点「测试连接」报 400，
+// 而用官方 curl 示例（不带 source_lang）却能成功。
+var sourceOverrides = map[string]map[string]string{
+	"deepl": {
+		"en": "EN", // 不是 EN-US
+		"pt": "PT", // 不是 PT-PT
+	},
+}
+
 // maps 是引擎 kind → 映射表的总索引。新增引擎时在这里加一行即可。
 var maps = map[string]map[string]string{
 	"openai":   openaiMap,
@@ -434,6 +458,12 @@ func Map(kind, code string) (string, bool) {
 
 // MapSource 映射【源语言】。允许 auto（若该引擎支持）。
 func MapSource(kind, code string) (string, bool) {
+	// 先查源语言专用覆盖表（例如 DeepL 的 en → EN 而非 EN-US）
+	if ov, ok := sourceOverrides[kind]; ok {
+		if v, hit := ov[code]; hit {
+			return v, true
+		}
+	}
 	return Map(kind, code)
 }
 

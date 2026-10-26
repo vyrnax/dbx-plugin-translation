@@ -66,10 +66,62 @@ func TestTranslate_AuthHeader(t *testing.T) {
 	if gotForm["target_lang"][0] != "ZH" {
 		t.Errorf("target_lang = %v, 期望 ZH（DeepL 大写码）", gotForm["target_lang"])
 	}
-	// DeepL 的英语码是 EN-US（不是 EN）：EN-US 比 EN-GB 更通用，
-	// 且 DeepL 对 target_lang=EN 会要求明确地区变体。映射见 lang.deeplMap。
-	if gotForm["source_lang"][0] != "EN-US" {
-		t.Errorf("source_lang = %v, 期望 EN-US", gotForm["source_lang"])
+	// 【关键】source_lang 必须是 EN，不能是 EN-US。
+	//
+	// DeepL 的 source_lang 与 target_lang 接受的取值集合不同：
+	//   target_lang 接受 EN-US / EN-GB（必须带地区后缀）
+	//   source_lang 只接受 EN（不带地区后缀）
+	//
+	// 这条断言原先写的是 EN-US —— 也就是说【测试把 bug 当成了正确行为】，
+	// 所以线上才会出现「用户填了正确的 Key，点测试连接报 400
+	// Value for 'source_lang' not supported」。
+	//
+	// 教训：断言的值必须来自官方文档，不能来自"实现现在输出什么"。
+	// 照着实现写断言，等于把 bug 固化成规范，测试永远绿、线上永远错。
+	if gotForm["source_lang"][0] != "EN" {
+		t.Errorf("source_lang = %v, 期望 EN（DeepL 的 source_lang 不接受地区后缀，"+
+			"传 EN-US 会返回 400）", gotForm["source_lang"])
+	}
+}
+
+// TestTranslate_TargetLangKeepsRegion 验证目标语言位置【仍带】地区后缀。
+//
+// 修 source_lang 时最容易顺手把 target_lang 也改成 EN —— 但 DeepL 的
+// target_lang 要求明确地区变体，传 EN 会返回
+// 400 "Value for 'target_lang' not supported"。
+// 两个位置的规则相反，必须分别断言。
+func TestTranslate_TargetLangKeepsRegion(t *testing.T) {
+	cases := []struct{ target, want string }{
+		{"en", "EN-US"}, // 英语必须带地区后缀
+		{"pt", "PT-PT"}, // 葡萄牙语必须带地区后缀
+		{"zh", "ZH"},    // 中文无地区差异
+		{"ja", "JA"},
+	}
+	for _, c := range cases {
+		t.Run(c.target, func(t *testing.T) {
+			var gotForm map[string][]string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = r.ParseForm()
+				gotForm = r.PostForm
+				_, _ = w.Write([]byte(`{"translations":[{"text":"x"}]}`))
+			}))
+			defer srv.Close()
+
+			e := newTestEngine(t, srv.URL+"/v2/translate", "k:fx")
+			// 源语言固定用中文，避免与 target 相同
+			if _, err := e.Translate(context.Background(), engine.Request{
+				Source: "你好", SourceLang: "zh", TargetLang: c.target,
+			}); err != nil {
+				t.Fatalf("翻译失败: %v", err)
+			}
+			if got := gotForm["target_lang"][0]; got != c.want {
+				t.Errorf("target_lang = %q, 期望 %q", got, c.want)
+			}
+			// 源语言位置：中文是 ZH，两个位置相同
+			if got := gotForm["source_lang"][0]; got != "ZH" {
+				t.Errorf("source_lang = %q, 期望 ZH", got)
+			}
+		})
 	}
 }
 

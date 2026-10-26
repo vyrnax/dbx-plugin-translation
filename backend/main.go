@@ -89,7 +89,7 @@ import (
 // 运行时反读保证了「包里的 manifest 说什么版本，侧车就自报什么版本」。
 const (
 	pluginID      = "com.gaogao.translation"
-	pluginVersion = "0.2.0"
+	pluginVersion = "0.2.1"
 )
 
 // 全局在飞翻译任务上限。

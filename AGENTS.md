@@ -660,6 +660,12 @@ var RPC_TIMEOUT = 30000, READY_TIMEOUT = 8000, CTX_TIMEOUT = 2500,
 | 阿里云填了 AccessKey Secret，点「测试连接」却报「不能为空」 | `buildEngine` 硬编码了 `Secrets{"apiKey":…, "secretKey":…, "appSecret":…}` 三个键，而阿里云适配器读的是 `accessKeySecret` —— 键名对不上，适配器永远读到空值 | 改为 `secretsFor(kind, plain)`：从 schema 反查标了 `Secret: true` 的字段名，用它作键。**新增引擎只要 schema 写对就自动正确**，不存在漏配。并补 `TestSecretsFor_AllEnginesCanReadSecret` 遍历全部引擎做回归（已用变异测试验证该测试确实能抓到原 bug） |
 | 保存引擎反复提示「配置已被其它会话修改，已自动重试」，诊断日志里 `本地 rev=59 服务端 rev=60` 反复出现同一个 59 | 两处叠加：① `withRevRetry` 只在 `body.rev === undefined` 时才填 rev，而 `buildPayload` 已把 engines.js 自己缓存的陈旧 rev 塞进 payload，该分支永不成立，**重试时用的还是陈旧 rev**；② `prefs/set` 与 `engines/*` 共用同一个全局 rev，改一次偏好就让引擎对话框缓存的 rev 失效 | `withRevRetry` 改为**无条件** `body.rev = status.rev`（storage.js 是唯一能从每个 RPC 响应持续刷新 rev 的地方，即 rev 的唯一权威来源）；`buildPayload` 不再自带 rev，上层模块不缓存 rev |
 
+| DeepL 填了正确的 Key，点「测试连接」报 400 `Value for 'source_lang' not supported`；但官方 curl 示例能成功 | DeepL 的 `source_lang` 与 `target_lang` 接受的取值集合**不同**：target 要 `EN-US`/`PT-PT`（带地区后缀），source 只接受 `EN`/`PT`（不带）。`MapSource` 与 `MapTarget` 共用一张表，于是源语言发出了 `EN-US` | lang 包新增 `sourceOverrides` 表，`MapSource` 优先查它。**隐蔽点**：英译中失败、中译英正常（ZH 两个位置都合法），看起来像偶发故障；而连通性探测固定用 en→zh，所以「测试连接」必失败 |
+| deepl 的单元测试一直绿，却没发现上面这个 bug | 测试断言写的是 `source_lang == "EN-US"` —— **照着实现的输出写断言**，等于把 bug 固化成规范 | 断言值必须来自官方文档，不能来自「实现现在输出什么」。已改为断言 `EN`，并补 `TestMap_DeepLTargetStillHasRegion` 防止修源语言时把目标语言也改坏（target 传 `EN` 同样会 400） |
+| GitHub Actions 上 `[FATAL] 找不到 target=darwin-arm64 的侧车二进制：/home/runner/.../_xbuild\dbx-plugin-translation-darwin-arm64` | `_buildpkg.js` 用 `root + \`_xbuild\\${binary}...\`` 硬编码反斜杠。Windows 上正常，Linux runner 上反斜杠不是分隔符，拼成「文件名里带反斜杠」的怪路径，`fs.existsSync` 必然 false | 全部改用 `path.join`。**症状极具误导性**：日志显示 5 个平台 `[build]` 全部成功，下一步却说找不到文件，看起来像 Go 交叉编译的问题，实际只是路径分隔符 |
+| 改完 `path.join` 后本地打包报 `ENOENT: ...dbx-plugin-translationmanifest.json` | 只改了 `resolveExe` 里的 3 处，却把 `const root = __dirname + path.sep` 的尾部分隔符去掉了，而文件里还有 7 处 `root + "manifest.json"` 依赖它 | 改路径拼接方式时必须**全文件扫描**所有同类拼接点，不能只改报错的那一处。已加 `_verify.mjs` 闸门扫描全部构建脚本 |
+| 新加的路径闸门一上来就 FAIL，报 `_buildpkg.js` 与 `_verify.mjs` 都有硬编码路径 | 闸门扫的是**原文**，而它自己的注释里正写着这个 bug 的示例代码（`root + \`_xbuild\\...\``） | 扫描前用 `stripComments` 剥离注释。这与「storage.js 注释解释为什么不用 localStorage 却被判违规」是同一类教训 —— **凡是 grep 源码的闸门，都必须先剥离注释** |
+
 **从这些坑里提炼的两条通用规则**（已并入铁律）：
 
 - **静态闸门的判据必须在 `_buildpkg.js` 与 `_verify.mjs` 之间保持一致**，且都要先剥离注释再扫描。两份闸门判据不一致会产生「本地打包通过、校验失败」的困惑。
@@ -671,6 +677,9 @@ var RPC_TIMEOUT = 30000, READY_TIMEOUT = 8000, CTX_TIMEOUT = 2500,
 - **杀子进程要考虑进程树**。Windows 的 `.bat`/`.cmd`、Unix 的 shell 脚本都会产生父子进程，只杀直接子进程会留下孤儿继续持有管道，导致「取消无效」与 goroutine 泄漏。
 - **跨模块共享的状态必须有唯一权威来源**。rev 这类「服务端递增、客户端回声」的值，只能由一层持有并从每个响应里刷新；让多个模块各自缓存，必然出现「A 的缓存过期了但 B 不知道」，症状是重试逻辑看似存在却永远用旧值。
 - **凡是「按名字取配置」的地方，名字必须来自同一份 schema**。适配器读 `accessKeySecret`、而调用方塞 `apiKey`，编译器不会报错、七个引擎都正常，只有一个引擎静默失效 —— 这类 bug 只能靠「遍历全部引擎」的测试兜住。
+- **测试断言的期望值必须来自官方文档，不能来自「实现现在输出什么」**。照着实现写断言等于把 bug 固化成规范：测试永远绿、线上永远错。DeepL 的 `source_lang=EN-US` 就是这么漏过去的。
+- **同一服务商的「请求参数」与「响应参数」取值集合可能不同**，源语言与目标语言也可能不同。接第三方 API 时必须逐个位置核对官方文档，不能假设对称。
+- **构建脚本里的路径一律用 `path.join`**，绝不手写分隔符。本地是 Windows、CI 是 Linux，硬编码反斜杠在本地永远测不出来。
 - **凡是「宿主只在某个阶段才校验」的契约，必须在本地提前校验**。manifest 字段白名单就是典型：打包阶段不报错、安装阶段才炸，而且一次只报一个错。把官方 schema 的约束抄进打包闸门，一次报完全部问题，比逐个试错省几倍时间。
 - **JS 正则字面量里不能出现裸 `/`**。含 URL 或 `//` 的 pattern 一律用 `new RegExp("...")`。
 - **凡是读「宿主桥接属性」的代码，都必须区分 init 前与 init 后**。`dbxPlugin.locale` / `.theme` / `.context` 在 init 消息到达前返回的是闭包初始值而非真实值。任何在 `boot()` 开头读它们的逻辑，都必须在 `ready` 之后**再读一次**。这类 bug 的症状是「某个功能永远停在默认值」，而且因为界面看起来完全正常，用户只会以为「插件不支持」。

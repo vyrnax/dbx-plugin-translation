@@ -15,9 +15,14 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import zlib from "node:zlib";
+import { fileURLToPath } from "node:url";
 import { removeTree, runProcess } from "./_testutil.mjs";
 
-const ROOT = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+// 用 fileURLToPath 而非手工替换 URL pathname：
+// 手工正则在 Linux 上碰巧能工作（pathname 本来就是 /home/...），
+// 但在 Windows 上要靠正则去掉前导斜杠，且遇到含空格或百分号编码的路径就会出错。
+// fileURLToPath 是标准做法，两个平台都正确。
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const BINARY = "dbx-plugin-translation";
 const srcMani = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
 const srcVer = srcMani.version;
@@ -361,7 +366,49 @@ const checks = [
   })()],
   ["无硬编码白色前景（应走 --primary-fg 等变量，否则宿主换浅色主色时看不清）",
     !/color:\s*#fff\b|color:\s*#ffffff/.test(cs)],
-  /* ---- 启动时序（三个真实事故固化成的闸门）---- */
+  /* ---- 构建脚本跨平台路径（CI 事故固化成的闸门）----
+   * 构建脚本里【绝不能】用硬编码反斜杠拼路径。
+   *
+   * 本项目在 GitHub Actions 上真实踩过：_buildpkg.js 写成
+   *   root + `_xbuild\\${binary}-${goos}-${goarch}`
+   * Windows 上正常，Linux runner 上反斜杠不是分隔符，拼出
+   *   /home/runner/.../_xbuild\dbx-plugin-translation-darwin-arm64
+   * 这种"文件名里带反斜杠"的怪路径，fs.existsSync 必然 false。
+   *
+   * 症状极具误导性：日志显示 5 个平台 [build] 全部成功，
+   * 下一步却报 [FATAL] 找不到侧车二进制 —— 看起来像 Go 交叉编译的问题，
+   * 实际只是路径分隔符。排查会一路往编译器方向走，白费时间。
+   */
+  ["构建脚本无硬编码反斜杠路径（必须用 path.join，否则 Linux CI 上失败）", (() => {
+    const scripts = ["_buildpkg.js", "_release.mjs", "_verify.mjs", "_e2e.mjs"];
+    const bad = [];
+    for (const s of scripts) {
+      const fp = path.join(ROOT, s);
+      if (!fs.existsSync(fp)) continue;
+      // 必须剥离注释再扫描：本闸门的注释里就写着这个 bug 的示例代码
+      // （root + `_xbuild\...`），不剥离会自我误报。
+      // 这与「storage.js 注释解释为什么不用 localStorage 却被判违规」是同一类教训。
+      const src = stripComments(fs.readFileSync(fp, "utf8"));
+      // 匹配 root/ROOT 与反斜杠路径的拼接
+      const re = /(root|ROOT|__dirname)\s*\+\s*[`"'][^`"']*\\[^`"']*[`"']/g;
+      const hits = src.match(re);
+      if (hits && hits.length) bad.push(`${s}: ${hits[0].slice(0, 60)}`);
+    }
+    return bad.length === 0;
+  })(), (() => {
+    const scripts = ["_buildpkg.js", "_release.mjs", "_verify.mjs", "_e2e.mjs"];
+    const bad = [];
+    for (const s of scripts) {
+      const fp = path.join(ROOT, s);
+      if (!fs.existsSync(fp)) continue;
+      const src = stripComments(fs.readFileSync(fp, "utf8"));
+      const re = /(root|ROOT|__dirname)\s*\+\s*[`"'][^`"']*\\[^`"']*[`"']/g;
+      for (const m of src.matchAll(re)) bad.push(`${s}: ${m[0].slice(0, 50)}`);
+    }
+    return bad.length ? bad.join(" | ") : "无硬编码反斜杠路径";
+  })()],
+
+    /* ---- 启动时序（三个真实事故固化成的闸门）---- */
   // 事故1：E.init() 早于 S.init() 执行 → translate/schema 在桥接未就绪时失败
   //        且永不重试 → 引擎管理页的「新建引擎」表单永远是空的。
   ["E.init 在 S.init 之后调用（schema 加载依赖桥接就绪）",

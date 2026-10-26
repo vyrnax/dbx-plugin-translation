@@ -36,7 +36,7 @@ const path = require("path");
 const crypto = require("crypto");
 const zlib = require("zlib");
 
-const root = __dirname + path.sep;
+const root = __dirname;
 const binary = "dbx-plugin-translation";   // 与 dbx-plugin.toml [backend].binary 一致
 
 const argv = process.argv.slice(2);
@@ -60,24 +60,35 @@ const GO_TRIPLES = {
   "linux-arm64": ["linux", "arm64"],
 };
 
+// 路径一律用 path.join，【绝不】手写反斜杠或正斜杠。
+//
+// 这是本项目在 GitHub Actions 上真实踩到的坑：原先写成
+//   root + `_xbuild\\${binary}-${goos}-${goarch}`
+// 在 Windows 上正常，但在 Linux runner 上反斜杠不是路径分隔符，
+// 于是拼出 `/home/runner/.../_xbuild\dbx-plugin-translation-darwin-arm64`
+// 这种"一个文件名里带反斜杠"的怪路径，fs.existsSync 必然 false，
+// 报 [FATAL] 找不到侧车二进制 —— 而 go build 其实已经成功产出了文件。
+//
+// 症状极具误导性：日志显示 5 个平台全部 [build] 成功，
+// 下一步却说找不到文件，看起来像 Go 交叉编译的问题，实际是路径分隔符。
 function resolveExe() {
   const explicit = argValue("--exe");
   if (explicit) return explicit;
-  if (target === "windows-x64") return root + `backend\\${binary}.exe`;
+  if (target === "windows-x64") return path.join(root, "backend", `${binary}.exe`);
   const t = GO_TRIPLES[target];
   if (!t) {
     console.error(`\n[FATAL] 未知 target：${target}。已知：${Object.keys(GO_TRIPLES).join(", ")}\n`);
     process.exit(1);
   }
-  return root + `_xbuild\\${binary}-${t[0]}-${t[1]}`;
+  return path.join(root, "_xbuild", `${binary}-${t[0]}-${t[1]}`);
 }
 
-const mani = JSON.parse(fs.readFileSync(root + "manifest.json", "utf8"));
+const mani = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
 const ver = mani.version || "0.0.0";
 // 只有 windows 目标带 .exe（对齐官方 executable_name()）
 const exeRel = `bin/${target}/${binary}${target.startsWith("windows") ? ".exe" : ""}`;
 const exePath = resolveExe();
-const out = root + `dist\\${mani.id}-${ver}-${target}.dbxp`;
+const out = path.join(root, "dist", `${mani.id}-${ver}-${target}.dbxp`);
 
 if (!fs.existsSync(exePath)) {
   console.error(`\n[FATAL] 找不到 target=${target} 的侧车二进制：${exePath}`);
@@ -98,13 +109,13 @@ const manifestBytes = Buffer.from(JSON.stringify(mani, null, 2) + "\n", "utf8");
  * ========================================================================== */
 
 // ---- 1.5a) 前端 DOM 自检 ----
-const htmlRaw = fs.readFileSync(root + "ui/index.html", "utf8");
+const htmlRaw = fs.readFileSync(path.join(root, "ui", "index.html"), "utf8");
 const htmlLive = htmlRaw.replace(/<!--[\s\S]*?-->/g, "");   // 去掉注释后的真实 DOM
 const liveIds = new Set([...htmlLive.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
 
 const jsFiles = ["app.js", "engines.js", "history.js", "storage.js"].map((n) => ({
   name: n,
-  raw: fs.readFileSync(root + "ui/" + n, "utf8"),
+  raw: fs.readFileSync(path.join(root, "ui", n), "utf8"),
 }));
 // 扫描前去掉注释：注释里会引用历史错误代码（例如 `$("x").onclick = ...`），不能当真
 jsFiles.forEach((f) => {
@@ -482,7 +493,7 @@ if (loc) {
 
 // ---- 4) .dbx-store.json 一致性（商店会比对）----
 try {
-  const pub = JSON.parse(fs.readFileSync(root + ".dbx-store.json", "utf8"));
+  const pub = JSON.parse(fs.readFileSync(path.join(root, ".dbx-store.json"), "utf8"));
   if (JSON.stringify(pub.permissions) !== JSON.stringify(perms)) {
     console.error("\n[FATAL] .dbx-store.json 的 permissions 与 manifest 不一致（商店会拒绝这个包）：");
     console.error("        manifest   : " + JSON.stringify(perms));
@@ -506,7 +517,7 @@ if (uiVer !== ver) {
   console.error(`\n[FATAL] ui/storage.js UI_VERSION=${uiVer} 与 manifest.version=${ver} 不一致。\n`);
   process.exit(1);
 }
-const goMain = fs.readFileSync(root + "backend/main.go", "utf8");
+const goMain = fs.readFileSync(path.join(root, "backend", "main.go"), "utf8");
 const goVer = (goMain.match(/pluginVersion\s*=\s*"([^"]+)"/) || [])[1];
 if (goVer !== ver) {
   console.error(`\n[FATAL] backend/main.go pluginVersion=${goVer} 与 manifest.version=${ver} 不一致。\n`);
@@ -539,7 +550,7 @@ for (const dir of ["assets", "ui"]) {
       if (e.isDirectory()) walk(fp, rel + "/" + e.name);
       else files.push([rel + "/" + e.name, fs.readFileSync(fp)]);
     }
-  })(root + dir, dir);
+  })(path.join(root, dir), dir);
 }
 
 // ---- 8) checksums.json 必须精确覆盖除自身与 signature.json 外的全部文件 ----
@@ -626,7 +637,7 @@ eo.writeUInt32LE(cd.length, 12);
 eo.writeUInt32LE(body.length, 16);
 eo.writeUInt16LE(0, 20);           // comment length
 
-fs.mkdirSync(root + "dist", { recursive: true });
+fs.mkdirSync(path.join(root, "dist"), { recursive: true });
 const pkg = Buffer.concat([body, cd, eo]);
 fs.writeFileSync(out, pkg);
 
