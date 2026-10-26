@@ -14,7 +14,7 @@
 
 ## 一、摘要
 
-在 DBX 宿主内构建一个生产级多引擎翻译插件 `com.gaogao.translation`。前端为纯原生 JS 工作台（sandbox iframe），后端为 Go 原生侧车（JSON Lines over stdio），支持 6 类翻译引擎、流式输出、输入即译、引擎管理、翻译历史，API Key 由侧车自行加密保管。
+在 DBX 宿主内构建一个生产级多引擎翻译插件 `com.vyrnax.translation`。前端为纯原生 JS 工作台（sandbox iframe），后端为 Go 原生侧车（JSON Lines over stdio），支持 6 类翻译引擎、流式输出、输入即译、引擎管理、翻译历史，API Key 由侧车自行加密保管。
 
 **核心架构决策（已锁定）**：不使用 `connection-provider`，引擎配置与密钥全部自管；所有数据存 `DBX_PLUGIN_DATA_DIR`；密钥保护采用「平台密钥库优先 + 机器绑定 AES-GCM 降级」；引擎分三批交付。
 
@@ -136,16 +136,16 @@ DBX 宿主（桌面端 / 开发宿主）
 
 ```json
 "contributions": [
-  { "type": "workbench", "id": "com.gaogao.translation.main",
+  { "type": "workbench", "id": "com.vyrnax.translation.main",
     "label": "翻译助手", "description": "多引擎翻译工作台", "icon": "assets/plugin.svg" },
-  { "type": "command", "id": "com.gaogao.translation.cmd.main",
+  { "type": "command", "id": "com.vyrnax.translation.cmd.main",
     "label": "翻译助手", "description": "打开翻译工作台", "icon": "assets/plugin.svg",
     "action": { "type": "open-workbench",
-                "workbench": "com.gaogao.translation.main", "presentation": "tab" } },
-  { "type": "menus", "id": "com.gaogao.translation.menus.main", "items": [
-    { "location": "appToolbar", "command": "com.gaogao.translation.cmd.main",
+                "workbench": "com.vyrnax.translation.main", "presentation": "tab" } },
+  { "type": "menus", "id": "com.vyrnax.translation.menus.main", "items": [
+    { "location": "appToolbar", "command": "com.vyrnax.translation.cmd.main",
       "group": "navigation", "order": 1, "default_visible": true },
-    { "location": "commandPalette", "command": "com.gaogao.translation.cmd.main",
+    { "location": "commandPalette", "command": "com.vyrnax.translation.cmd.main",
       "group": "navigation", "order": 1 } ] }
 ]
 ```
@@ -467,7 +467,7 @@ PING_TIMEOUT=6000, BRIDGE_TIMEOUT=8000, TEST_TIMEOUT=30000
 **步骤**：
 1. 写 `.gitignore`（AGENTS.md §10.1 全文，含 `.dbx-dev/`、`_gocache/`、`_gotmp/`、`_xbuild/`、`dist/`、`*.exe`、`node_modules/`、`.idea`、`.vscode`）
 2. vendor SDK：从 `C:\Users\Lenovo\AppData\Roaming\npm\node_modules\@dbx-app\plugin-cli\sdk-root\plugins\sdk\go\dbx-plugin-sdk\sdk.go` **字节级复制**到 `backend/dbxsdk/sdk.go`，写 `backend/dbxsdk/VENDOR.md` 说明来源/为何 vendor/传输方式/禁改
-3. `backend/go.mod`：`module github.com/gaogao/translation`，`go 1.21`，依赖 `modernc.org/sqlite` + `golang.org/x/sys`
+3. `backend/go.mod`：`module github.com/vyrnax/translation`，`go 1.21`，依赖 `modernc.org/sqlite` + `golang.org/x/sys`
 4. `manifest.json`（§4.3/§4.4 全文，含 `localizations.en` 覆盖全部 3 个贡献点 id）
 5. `dbx-plugin.toml`：`schema_version=1`，`[backend] language="go" directory="backend" binary="dbx-plugin-translation"`，`[package] include=["assets","ui"]`
 6. `.dbx-store.json`：`name`/`permissions` 必须与 manifest 一致
@@ -596,7 +596,7 @@ PING_TIMEOUT=6000, BRIDGE_TIMEOUT=8000, TEST_TIMEOUT=30000
 26. `node _release.mjs` 出 6 平台候选包 + `release-candidates.json`
 27. GitHub Release：候选包 + `.artifact.json` + `release-candidates.json` + Release Notes + 源码 Tag（**`.dbxp` 不进 Git 历史**）
 28. 按 `t8y2/dbx-store` 贡献指南提交首次上架信息（`publisher` + 候选信息）
-29. 等待同步 Workflow 创建 `candidates/com.gaogao.translation.json` 候选 PR
+29. 等待同步 Workflow 创建 `candidates/com.vyrnax.translation.json` 候选 PR
 30. 配合维护者审核（源码/Manifest/权限/SHA-256/大小/原生行为），签名后合并
 
 **验收**：全部自动化测试通过；`-race` 无告警；密钥审计零泄露；6 平台包 `_verify.mjs` 全 PASS（本机平台真跑探针，其余标 SKIP 并注明需真机冒烟）；桌面端完整手工验收清单通过。
@@ -718,7 +718,7 @@ data/export       → dataBase64 可解码，默认不含密钥
 8. 引擎节奏：分三阶段交付
 
 **本计划设定的默认值**（实现时按此执行，无需再决策）：
-- 插件 ID `com.gaogao.translation`；名称 `翻译助手`；publisher `gaogao`；Go module `github.com/gaogao/translation`；二进制 `dbx-plugin-translation`
+- 插件 ID `com.vyrnax.translation`；名称 `翻译助手`；publisher `vyrnax`；Go module `github.com/vyrnax/translation`；二进制 `dbx-plugin-translation`
 - `engines.dbx = ">=0.6.21"`，`engines.host_api = "1"`，`permissions = ["host.events"]`
 - 即时翻译：防抖 600ms（200–3000）、最小 2 字符、自动翻译上限 2000 字符
 - 历史保留 500 条（100–5000），超限淘汰最旧非收藏
@@ -752,6 +752,6 @@ data/export       → dataBase64 可解码，默认不含密钥
 | DBX 桌面端 | `C:\develop\DBX\dbx.exe` |
 | 官方 Go SDK | `C:\Users\Lenovo\AppData\Roaming\npm\node_modules\@dbx-app\plugin-cli\sdk-root\plugins\sdk\go\dbx-plugin-sdk\sdk.go` |
 | 参考插件 | `C:\Project\backend\me\dbx-todo`（已上架官方商店，Go 实现） |
-| 项目仓库 | `C:\Project\backend\me\dbx-plugin-translation`，origin `https://github.com/Gaogao105/dbx-plugin-translation.git`，分支 `main` |
+| 项目仓库 | `C:\Project\backend\me\dbx-plugin-translation`，origin `https://github.com/vyrnax/dbx-plugin-translation.git`，分支 `main` |
 
 交叉编译已实测 6 平台全通过（`CGO_ENABLED=0`）：windows/amd64、windows/arm64、linux/amd64、linux/arm64、darwin/amd64、darwin/arm64。

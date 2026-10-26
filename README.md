@@ -286,7 +286,7 @@ node _verify.mjs
 ## 7. 发布到官方商店
 
 1. 在本仓库创建版本 Tag 与 GitHub Release，包含各平台未签名 `.dbxp`、对应 `.artifact.json`、汇总的 `release-candidates.json`、Release Notes（**`.dbxp` 不进 Git 历史**）
-2. `t8y2/dbx-store` 的同步 Workflow 读取最新 Release，自动创建或更新 `candidates/com.gaogao.translation.json` 候选 PR
+2. `t8y2/dbx-store` 的同步 Workflow 读取最新 Release，自动创建或更新 `candidates/com.vyrnax.translation.json` 候选 PR
 3. 维护者审核源码 / Manifest / 权限 / SHA-256 / 大小 / 原生行为，通过后用仓库密钥加 Ed25519 签名
 4. Workflow 回写 `plugins/<id>.json` 与 `catalog/index.json`，维护者合并
 

@@ -114,7 +114,7 @@ dbx-plugin-translation/
 ### 3.1 命名约定
 
 - **下划线前缀 `_`**：所有构建/校验脚本。打包时会跳过 `_` 前缀和 `.` 前缀的文件，防止脚本混入发布包。
-- **插件 ID**：`com.gaogao.translation`（小写字母、数字、`.` `_` `-`；发布后**永不更改**，改了会被视为新入口）。
+- **插件 ID**：`com.vyrnax.translation`（小写字母、数字、`.` `_` `-`；发布后**永不更改**，改了会被视为新入口）。
 - **侧车二进制名**：`dbx-plugin-translation`，必须与 `dbx-plugin.toml` 的 `[backend].binary` 一致。
 
 ---
@@ -155,7 +155,7 @@ Sidecar identity or protocol does not match manifest
 
 ```go
 const (
-    pluginID      = "com.gaogao.translation"
+    pluginID      = "com.vyrnax.translation"
     pluginVersion = "0.1.0"   // 仅兜底；运行时以包内 manifest.json 为准
 )
 ```
@@ -506,7 +506,7 @@ vendor 规范：
 
 1. 复制到 `backend/dbxsdk/sdk.go`，**字节级复制，禁止任何修改**——任何改动都可能悄悄偏离宿主的协议预期
 2. 同目录放 `VENDOR.md` 说明来源、为何 vendor、传输方式
-3. import 路径用本模块内的：`dbxpluginsdk "github.com/gaogao/translation/dbxsdk"`
+3. import 路径用本模块内的：`dbxpluginsdk "github.com/vyrnax/translation/dbxsdk"`
 4. 升级 CLI 后应重新 diff 一次，确认是否需要同步
 
 **为什么用官方 SDK 而不是手写 JSON-RPC 循环**——SDK 白送三件容易写错的事：
@@ -1113,7 +1113,7 @@ Thumbs.db
 ### 10.3 远程
 
 ```
-origin  https://github.com/Gaogao105/dbx-plugin-translation.git
+origin  https://github.com/vyrnax/dbx-plugin-translation.git
 ```
 
 当前为空仓库，分支 `main`，尚无提交。

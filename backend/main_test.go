@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	dbxpluginsdk "github.com/gaogao/translation/dbxsdk"
-	"github.com/gaogao/translation/engine"
-	"github.com/gaogao/translation/secret"
-	"github.com/gaogao/translation/store"
+	dbxpluginsdk "github.com/vyrnax/translation/dbxsdk"
+	"github.com/vyrnax/translation/engine"
+	"github.com/vyrnax/translation/secret"
+	"github.com/vyrnax/translation/store"
 )
 
 // newTestPlugin 构造一个带独立数据目录的 plugin 实例。

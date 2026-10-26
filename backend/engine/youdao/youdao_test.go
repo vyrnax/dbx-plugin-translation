@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gaogao/translation/engine"
+	"github.com/vyrnax/translation/engine"
 )
 
 // TestTruncate_RuneBoundary 是有道签名正确性的【最关键】测试。

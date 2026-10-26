@@ -14,8 +14,8 @@
   "permissions": [
     "host.events"
   ],
-  "source": "https://github.com/Gaogao105/dbx-plugin-translation",
-  "homepage": "https://github.com/Gaogao105/dbx-plugin-translation",
+  "source": "https://github.com/vyrnax/dbx-plugin-translation",
+  "homepage": "https://github.com/vyrnax/dbx-plugin-translation",
   "license": "Apache-2.0",
   "releaseNotes": "首个版本：OpenAI 兼容引擎全链路（流式 + 输入即译 + 引擎管理 + 翻译历史）。"
 }

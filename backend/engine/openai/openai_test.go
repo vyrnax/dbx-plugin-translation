@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gaogao/translation/engine"
+	"github.com/vyrnax/translation/engine"
 )
 
 // newTestEngine 构造一个指向 httptest 服务器的引擎实例。

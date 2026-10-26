@@ -23,7 +23,7 @@
 //     不可用时降级为机器绑定 AES-256-GCM，并通过 translate/ping 的 secretSecure
 //     字段告知前端，由前端常驻警示条明确披露「仅混淆保护」。
 
-module github.com/gaogao/translation
+module github.com/vyrnax/translation
 
 go 1.21
 

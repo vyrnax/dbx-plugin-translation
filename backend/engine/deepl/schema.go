@@ -1,6 +1,6 @@
 package deepl
 
-import "github.com/gaogao/translation/engine"
+import "github.com/vyrnax/translation/engine"
 
 // schema 返回 DeepL 的配置表单描述。
 func schema() engine.Schema {

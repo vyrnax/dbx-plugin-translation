@@ -1,14 +1,14 @@
 {
   "$schema": "https://raw.githubusercontent.com/t8y2/dbx/main/plugins/manifest.schema.json",
   "manifest_version": 1,
-  "id": "com.gaogao.translation",
+  "id": "com.vyrnax.translation",
   "name": "Translation 即时翻译",
   "version": "0.2.1",
-  "publisher": "gaogao",
+  "publisher": "vyrnax",
   "description": "Translation 即时翻译 —— 多引擎翻译插件：支持 OpenAI 兼容大模型、DeepL、百度、有道、阿里云与本地 CLI 代理，含流式输出、输入即译、引擎管理与翻译历史。所有网络请求由内置 Go 侧车发出（浏览器沙箱的 CSP 禁止前端直连外部端点，且 host.network 白名单最多 8 个固定 origin，无法满足用户自填端点）。API Key 经系统密钥库（Windows DPAPI / macOS Keychain / Linux secret-tool）加密后落盘到插件数据目录，不可用时降级为机器绑定 AES-256-GCM 并在界面明确警示。引擎配置、翻译历史与界面偏好统一存放在 <插件数据目录>/translation.db（SQLite），由侧车写入；前端运行在 opaque origin 沙箱中，不接触磁盘，也不使用 localStorage。",
   "icon": "assets/plugin.svg",
-  "source": "https://github.com/Gaogao105/dbx-plugin-translation",
-  "homepage": "https://github.com/Gaogao105/dbx-plugin-translation",
+  "source": "https://github.com/vyrnax/dbx-plugin-translation",
+  "homepage": "https://github.com/vyrnax/dbx-plugin-translation",
   "engines": {
     "dbx": ">=0.6.21",
     "host_api": "1"
@@ -28,37 +28,37 @@
   "contributions": [
     {
       "type": "workbench",
-      "id": "com.gaogao.translation.main",
+      "id": "com.vyrnax.translation.main",
       "label": "Translation 即时翻译",
       "description": "多引擎翻译工作台：输入即译、流式输出、引擎管理、翻译历史",
       "icon": "assets/plugin.svg"
     },
     {
       "type": "command",
-      "id": "com.gaogao.translation.cmd.main",
+      "id": "com.vyrnax.translation.cmd.main",
       "label": "Translation 即时翻译",
       "description": "打开翻译工作台",
       "icon": "assets/plugin.svg",
       "action": {
         "type": "open-workbench",
-        "workbench": "com.gaogao.translation.main",
+        "workbench": "com.vyrnax.translation.main",
         "presentation": "tab"
       }
     },
     {
       "type": "menus",
-      "id": "com.gaogao.translation.menus.main",
+      "id": "com.vyrnax.translation.menus.main",
       "items": [
         {
           "location": "appToolbar",
-          "command": "com.gaogao.translation.cmd.main",
+          "command": "com.vyrnax.translation.cmd.main",
           "group": "navigation",
           "order": 1,
           "default_visible": true
         },
         {
           "location": "commandPalette",
-          "command": "com.gaogao.translation.cmd.main",
+          "command": "com.vyrnax.translation.cmd.main",
           "group": "navigation",
           "order": 1
         }
@@ -70,11 +70,11 @@
       "name": "Translation",
       "description": "Translation — multi-engine translation plugin: OpenAI-compatible LLMs, DeepL, Baidu, Youdao, Alibaba Cloud and local CLI proxies, with streaming output, translate-as-you-type, engine management and translation history. All HTTP requests are issued by the bundled Go sidecar (the browser sandbox CSP forbids direct calls, and the host.network allowlist cannot express user-supplied endpoints). API keys are encrypted with the OS keychain (Windows DPAPI / macOS Keychain / Linux secret-tool) before being written to the plugin data directory, falling back to machine-bound AES-256-GCM with an explicit in-UI warning. Engine config, history and preferences live in <plugin-data>/translation.db (SQLite), written by the sidecar; the frontend runs in an opaque-origin sandbox and never touches disk or localStorage.",
       "contributions": {
-        "com.gaogao.translation.main": {
+        "com.vyrnax.translation.main": {
           "label": "Translation",
           "description": "Multi-engine translation workbench: translate-as-you-type, streaming output, engine management and history"
         },
-        "com.gaogao.translation.cmd.main": {
+        "com.vyrnax.translation.cmd.main": {
           "label": "Translation",
           "description": "Open the translation workbench"
         }

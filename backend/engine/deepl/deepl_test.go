@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gaogao/translation/engine"
+	"github.com/vyrnax/translation/engine"
 )
 
 func newTestEngine(t *testing.T, endpoint, key string) engine.Engine {

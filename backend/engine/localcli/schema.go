@@ -1,6 +1,6 @@
 package localcli
 
-import "github.com/gaogao/translation/engine"
+import "github.com/vyrnax/translation/engine"
 
 // schema 返回本引擎的配置表单描述。
 //

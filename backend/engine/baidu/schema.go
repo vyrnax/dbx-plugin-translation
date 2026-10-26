@@ -1,6 +1,6 @@
 package baidu
 
-import "github.com/gaogao/translation/engine"
+import "github.com/vyrnax/translation/engine"
 
 // schema 返回百度翻译的配置表单描述。
 //

@@ -1,6 +1,6 @@
 package tencent
 
-import "github.com/gaogao/translation/engine"
+import "github.com/vyrnax/translation/engine"
 
 // schema 返回腾讯云翻译的配置表单描述。
 func schema() engine.Schema {

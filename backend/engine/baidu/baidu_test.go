@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gaogao/translation/engine"
+	"github.com/vyrnax/translation/engine"
 )
 
 const (

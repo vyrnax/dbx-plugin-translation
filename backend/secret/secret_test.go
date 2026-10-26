@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const testPluginID = "com.gaogao.translation"
+const testPluginID = "com.vyrnax.translation"
 
 // 测试用的假密钥。所有断言都围绕「它绝不能出现在密文/日志/错误里」。
 const testSecret = "sk-test-ABCDEFGHIJKLMNOP1234567890"

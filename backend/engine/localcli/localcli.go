@@ -44,9 +44,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gaogao/translation/engine"
-	"github.com/gaogao/translation/lang"
-	"github.com/gaogao/translation/trace"
+	"github.com/vyrnax/translation/engine"
+	"github.com/vyrnax/translation/lang"
+	"github.com/vyrnax/translation/trace"
 )
 
 // Kind 是本引擎的类型标识。

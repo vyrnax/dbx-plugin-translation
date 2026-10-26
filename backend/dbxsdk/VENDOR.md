@@ -24,7 +24,7 @@ C:\Users\Lenovo\AppData\Roaming\npm\node_modules\@dbx-app\plugin-cli\sdk-root\pl
 3. 作为本模块内的普通 package vendor 进来后，侧车只需 Go 1.21+，且能**完全离线构建**。
    官方 `dbx-plugin-files` 对 Rust SDK 也是同样处理方式。
 
-本插件内的 import 路径：`github.com/gaogao/translation/dbxsdk`
+本插件内的 import 路径：`github.com/vyrnax/translation/dbxsdk`
 
 ## 传输方式
 

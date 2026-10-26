@@ -58,26 +58,26 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gaogao/translation/chunk"
-	dbxpluginsdk "github.com/gaogao/translation/dbxsdk"
-	"github.com/gaogao/translation/engine"
+	"github.com/vyrnax/translation/chunk"
+	dbxpluginsdk "github.com/vyrnax/translation/dbxsdk"
+	"github.com/vyrnax/translation/engine"
 	// 引擎注册：每个子包在 init() 里调用 engine.Register，
 	// 这里用空白导入触发。新增引擎 = 新增一个子包 + 这里加一行，
 	// 前端零改动（表单由 translate/schema 动态渲染）。
 	//
 	// 导入顺序即 UI 里引擎类型下拉框的展示顺序。
-	_ "github.com/gaogao/translation/engine/aliyun"   // 阿里云翻译（ACS3-HMAC-SHA256）
-	_ "github.com/gaogao/translation/engine/baidu"    // 百度翻译（MD5 签名）
-	_ "github.com/gaogao/translation/engine/deepl"    // DeepL（REST，无流式）
-	_ "github.com/gaogao/translation/engine/google"   // Google 翻译（API Key）
-	_ "github.com/gaogao/translation/engine/localcli" // 本地 CLI 代理（claude / codex，无需 API Key）
-	_ "github.com/gaogao/translation/engine/openai"   // OpenAI 兼容大模型（SSE 流式）
-	_ "github.com/gaogao/translation/engine/tencent"  // 腾讯云翻译（TC3-HMAC-SHA256）
-	_ "github.com/gaogao/translation/engine/youdao"   // 有道翻译（SHA256 签名）
-	"github.com/gaogao/translation/lang"
-	"github.com/gaogao/translation/secret"
-	"github.com/gaogao/translation/store"
-	"github.com/gaogao/translation/trace"
+	_ "github.com/vyrnax/translation/engine/aliyun"   // 阿里云翻译（ACS3-HMAC-SHA256）
+	_ "github.com/vyrnax/translation/engine/baidu"    // 百度翻译（MD5 签名）
+	_ "github.com/vyrnax/translation/engine/deepl"    // DeepL（REST，无流式）
+	_ "github.com/vyrnax/translation/engine/google"   // Google 翻译（API Key）
+	_ "github.com/vyrnax/translation/engine/localcli" // 本地 CLI 代理（claude / codex，无需 API Key）
+	_ "github.com/vyrnax/translation/engine/openai"   // OpenAI 兼容大模型（SSE 流式）
+	_ "github.com/vyrnax/translation/engine/tencent"  // 腾讯云翻译（TC3-HMAC-SHA256）
+	_ "github.com/vyrnax/translation/engine/youdao"   // 有道翻译（SHA256 签名）
+	"github.com/vyrnax/translation/lang"
+	"github.com/vyrnax/translation/secret"
+	"github.com/vyrnax/translation/store"
+	"github.com/vyrnax/translation/trace"
 )
 
 // 必须与 manifest.json 的 id / version 完全一致，否则宿主判定 Sidecar 身份不匹配并丢弃。
@@ -88,7 +88,7 @@ import (
 // 人工同步迟早会漏，而漏了的后果是侧车被宿主静默丢弃。
 // 运行时反读保证了「包里的 manifest 说什么版本，侧车就自报什么版本」。
 const (
-	pluginID      = "com.gaogao.translation"
+	pluginID      = "com.vyrnax.translation"
 	pluginVersion = "0.2.1"
 )
 

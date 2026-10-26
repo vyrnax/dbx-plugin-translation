@@ -9,8 +9,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/gaogao/translation/engine"
-	"github.com/gaogao/translation/lang"
+	"github.com/vyrnax/translation/engine"
+	"github.com/vyrnax/translation/lang"
 )
 
 // TestRegistry_LangMapsMatchAdapters 验证 lang 包的映射表与 engine 注册表【完全一致】。
