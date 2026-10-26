@@ -976,6 +976,41 @@ func TestTranslateRun_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestTranslateRun_PreservesDetectedLangAndModel 验证分段翻译不丢失适配器返回的元信息。
+//
+// 这是线上验证发现的 bug：runChunked 重建 Result 时只填了
+// Target/ElapsedMs/Chunks/Engine，把适配器返回的 DetectedLang 与 Model 丢掉了。
+// 症状是 translate/run 响应里 detectedLang 与 model 永远是空串，
+// 「自动检测到的源语言」完全展示不出来。
+//
+// 单元测试当时没抓到，是因为它们直接测适配器（Translate 返回的 Result 是对的），
+// 而没有测「经过 runChunked 之后」的 Result —— 分层测试的盲区。
+func TestTranslateRun_PreservesDetectedLangAndModel(t *testing.T) {
+	p := newTestPlugin(t)
+	// 假端点返回 detected_source_language，模拟 DeepL/Google 这类会回报源语言的引擎
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"你好世界"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+	id := setupEngine(t, p, srv.URL+"/v1/chat/completions")
+
+	out, rpcErr := call(p, "translate/run", map[string]any{
+		"engineId": id, "text": "hello world", "sourceLang": "en", "targetLang": "zh",
+	})
+	if rpcErr != nil {
+		t.Fatalf("翻译报错: %v", rpcErr)
+	}
+	// model 必须被保留（openai 适配器会填模型名）
+	if m, _ := out["model"].(string); m == "" {
+		t.Errorf("model 为空 —— runChunked 丢失了适配器返回的 Model 字段（响应: %v）", out)
+	}
+	// engineKind 必须有值
+	if k, _ := out["engineKind"].(string); k == "" {
+		t.Error("engineKind 为空")
+	}
+}
+
 func TestTranslateRun_RejectsInvalidInput(t *testing.T) {
 	p := newTestPlugin(t)
 	srv, endpoint := newFakeUpstream(t, `{"choices":[{"message":{"content":"x"}}]}`)

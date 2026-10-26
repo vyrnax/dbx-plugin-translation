@@ -1339,6 +1339,17 @@ func (p *plugin) runChunked(
 		builder strings.Builder
 		chunks  int
 		emitted int
+		// detectedLang / model 需要从【分段结果】里保留下来。
+		//
+		// 之前重建 Result 时只填了 Target/ElapsedMs/Chunks/Engine，
+		// 把适配器返回的 DetectedLang 与 Model 丢掉了 —— 症状是
+		// 前端 translate/run 响应里 detectedLang 与 model 永远是空串，
+		// 「自动检测到的源语言」这个信息完全展示不出来。
+		//
+		// 取第一个非空值：源语言检测对整篇文本是一致的，
+		// 而分段场景下只有第一段（或前几段）会带回检测结果。
+		detectedLang string
+		model        string
 	)
 	for i, part := range split {
 		// 每段之前都检查取消：长文分段翻译可能持续几分钟，
@@ -1390,6 +1401,13 @@ func (p *plugin) runChunked(
 			return engine.Result{}, err
 		}
 		chunks++
+		// 保留适配器返回的元信息（只取第一个非空值）
+		if detectedLang == "" && partResult.DetectedLang != "" {
+			detectedLang = partResult.DetectedLang
+		}
+		if model == "" && partResult.Model != "" {
+			model = partResult.Model
+		}
 
 		// 段间延时：尊重免费档 1 QPS 限制。
 		// 只在还有后续段时才等，最后一段不用白等。
@@ -1411,10 +1429,12 @@ func (p *plugin) runChunked(
 		name = e.Kind()
 	}
 	return engine.Result{
-		Target:    target,
-		ElapsedMs: time.Since(start).Milliseconds(),
-		Chunks:    chunks,
-		Engine:    name,
+		Target:       target,
+		DetectedLang: detectedLang,
+		Model:        model,
+		ElapsedMs:    time.Since(start).Milliseconds(),
+		Chunks:       chunks,
+		Engine:       name,
 	}, nil
 }
 

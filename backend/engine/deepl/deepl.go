@@ -272,12 +272,25 @@ func (e *engineImpl) Test(ctx context.Context) error {
 	return err
 }
 
-// toCanonical 把 DeepL 的私有码（EN-US / ZH / NB）转回规范码。
+// toCanonical 把 DeepL 的私有码转回规范码。
 // 前端语言下拉用的是规范码，对不上就无法高亮。
+//
+// 【必须同时匹配源形态与目标形态】：DeepL 的 detected_source_language
+// 返回的是【源语言形态】的码（英语是 EN），而 lang.Map 返回的是
+// 目标形态（EN-US）。只比对目标形态的话，英语永远匹配不上，
+// detectedLang 会一直是空 —— 这是引入 sourceOverrides 后新产生的不一致。
 func toCanonical(deeplCode string) string {
 	upper := strings.ToUpper(strings.TrimSpace(deeplCode))
+	if upper == "" {
+		return ""
+	}
 	for _, l := range lang.All() {
-		if code, ok := lang.Map(Kind, l.Code); ok && strings.ToUpper(code) == upper {
+		// 先比源形态（detected_source_language 用的就是这个）
+		if code, ok := lang.MapSource(Kind, l.Code); ok && strings.ToUpper(code) == upper {
+			return l.Code
+		}
+		// 再比目标形态（EN-US / PT-PT 等带地区后缀的）
+		if code, ok := lang.MapTarget(Kind, l.Code); ok && strings.ToUpper(code) == upper {
 			return l.Code
 		}
 	}

@@ -166,6 +166,61 @@ func TestTranslate_DetectedLangToCanonical(t *testing.T) {
 	}
 }
 
+// TestToCanonical_BothForms 验证 DeepL 私有码转规范码时【两种形态都能匹配】。
+//
+// DeepL 的 detected_source_language 返回源语言形态（英语是 EN），
+// 而 lang.Map 返回目标形态（EN-US）。只比对目标形态的话英语永远匹配不上，
+// detectedLang 会一直是空 —— 这是引入 sourceOverrides 后新产生的不一致，
+// 已在线上验证中发现（英译中成功但 detectedLang 为空）。
+func TestToCanonical_BothForms(t *testing.T) {
+	cases := []struct{ deeplCode, want string }{
+		// 源语言形态（detected_source_language 实际返回的）
+		{"EN", "en"},
+		{"PT", "pt"},
+		// 目标语言形态（带地区后缀）
+		{"EN-US", "en"},
+		{"PT-PT", "pt"},
+		// 无地区差异的语言
+		{"ZH", "zh"},
+		{"JA", "ja"},
+		{"DE", "de"},
+		{"NB", "no"},
+		// 大小写不敏感
+		{"en", "en"},
+		{"zh", "zh"},
+		// 空值与未知码
+		{"", ""},
+		{"   ", ""},
+		{"XX", ""},
+	}
+	for _, c := range cases {
+		if got := toCanonical(c.deeplCode); got != c.want {
+			t.Errorf("toCanonical(%q) = %q, 期望 %q", c.deeplCode, got, c.want)
+		}
+	}
+}
+
+// TestTranslate_DetectedLangFromSourceForm 验证真实响应里的
+// detected_source_language（源形态 EN）能被正确转换。
+func TestTranslate_DetectedLangFromSourceForm(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// DeepL 真实返回的就是源形态的 EN，不是 EN-US
+		_, _ = w.Write([]byte(`{"translations":[{"detected_source_language":"EN","text":"你好"}]}`))
+	}))
+	defer srv.Close()
+
+	e := newTestEngine(t, srv.URL+"/v2/translate", "k:fx")
+	res, err := e.Translate(context.Background(), engine.Request{
+		Source: "hi", SourceLang: "auto", TargetLang: "zh",
+	})
+	if err != nil {
+		t.Fatalf("翻译失败: %v", err)
+	}
+	if res.DetectedLang != "en" {
+		t.Errorf("DetectedLang = %q, 期望 en（源形态 EN 必须能转回规范码）", res.DetectedLang)
+	}
+}
+
 // TestTranslate_QuotaExhausted456 验证 DeepL 专有的 456 状态码。
 //
 // 456 不是标准 HTTP 码，DeepL 用它表示「配额耗尽」。
