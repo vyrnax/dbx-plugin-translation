@@ -36,6 +36,16 @@
     editing: null,       // 正在编辑的引擎（null 表示新建）
     editingKind: "",     // 弹框里当前选中的 kind
     secretTouched: false,// 用户是否动过密钥输入框
+    // nameTouched 记录用户是否【手动改过】引擎名称。
+    //
+    // 这是「切换类型时自动换默认名」功能的关键：
+    //   - 未改过 → 名称仍等于当前类型的默认名，切类型时应跟着换
+    //   - 改过   → 用户有自己的命名意图（例如「阿里云-生产」），
+    //              切类型时【绝不能】覆盖，否则用户输入凭空消失
+    //
+    // 判定不用布尔标志单独维护，而是每次比较「当前值是否等于默认名」，
+    // 这样用户把名字改回默认值时会自动恢复跟随行为，符合直觉。
+    nameTouched: false,
     testing: false,
     onChanged: null      // 引擎变更后的回调（app.js 用来刷新下拉框）
   };
@@ -334,6 +344,7 @@
   function openEditor(e) {
     state.editing = e || null;
     state.secretTouched = false;
+    state.nameTouched = false;
 
     var titleEl = $("engine-modal-title");
     if (titleEl) { titleEl.textContent = e ? t("editEngine") : t("addEngine"); }
@@ -349,6 +360,17 @@
     var kindSel = $("engine-kind");
     if (kindSel) { kindSel.disabled = !!e; }
 
+    // 名称框：编辑时回填已有名称并标记为「用户已定名」（不再自动跟随类型），
+    // 新建时填入所选类型的默认名。
+    if (e) {
+      setVal("engine-name", e.name || "");
+      // 编辑已有引擎时，名称是用户之前定的，切类型也不该动它
+      // （何况编辑时类型选择框已被禁用，本来也切不了）
+      state.nameTouched = true;
+    } else {
+      setVal("engine-name", defaultNameFor(state.editingKind));
+    }
+
     renderKindDesc();
     renderFields();
     show("engine-modal", true);
@@ -360,9 +382,47 @@
     state.editing = null;
     state.editingKind = "";
     state.secretTouched = false;
+    state.nameTouched = false;
     var box = $("engine-fields");
     if (box) { box.textContent = ""; }
     clearFormError();
+  }
+
+  // defaultNameFor 返回某引擎类型的默认名称（按当前界面语言）。
+  //
+  // 来源是侧车下发的 schema.defaultName / defaultNameEn —— 默认名属于
+  // 引擎自身的知识（「阿里云翻译」而不是「aliyun」），放在 schema 里
+  // 才能保证「新增引擎前端零改动」。
+  //
+  // 兜底顺序：schema.defaultName → schema.label → kind 本身。
+  function defaultNameFor(kind) {
+    var k = state.kindMap[kind];
+    if (!k) { return kind || ""; }
+    var d = isZh() ? (k.defaultName || k.label) : (k.defaultNameEn || k.labelEn || k.defaultName || k.label);
+    return d || kind || "";
+  }
+
+  // nameIsDefault 判断名称框当前内容是否「仍等于某类型的默认名」。
+  //
+  // 空值也算默认（用户没填，留空时后端会用 defaultEngineName 兜底）。
+  function nameIsDefault(kind) {
+    var cur = val("engine-name").trim();
+    if (cur === "") { return true; }
+    if (cur === defaultNameFor(kind)) { return true; }
+    // 也认另一种语言的默认名：用户可能在中文界面下填了英文名，
+    // 之后切换界面语言，此时不应把它当成「用户自定义名」而拒绝跟随。
+    var k = state.kindMap[kind];
+    if (k && (cur === k.defaultName || cur === k.defaultNameEn)) { return true; }
+    return false;
+  }
+
+  // syncNameToKind 在切换引擎类型时同步名称。
+  //
+  // 只在「名称仍等于旧类型默认名」时才替换 —— 这是脏值跟踪，
+  // 保证用户手动起的名字（例如「阿里云-生产环境」）在切换类型后不被冲掉。
+  function syncNameToKind(newKind) {
+    if (state.nameTouched) { return; }
+    setVal("engine-name", defaultNameFor(newKind));
   }
 
   function renderKindSelect(e) {
@@ -652,6 +712,15 @@
   function validateForm() {
     var k = state.kindMap[state.editingKind];
     if (!k) { return t("unknownError"); }
+
+    // 名称校验先于字段校验：名称是用户区分同类多实例的唯一手段，
+    // 缺了它列表里会出现两行一模一样的「阿里云翻译」，无法分辨。
+    // 但允许留空 —— 留空时用默认名兜底（见 buildPayload），不算错误。
+    var nameVal = val("engine-name").trim();
+    if (nameVal === "" && defaultNameFor(state.editingKind) === "") {
+      return t("engineNameRequired");
+    }
+
     var values = collectValues();
 
     for (var i = 0; i < k.fields.length; i++) {
@@ -697,11 +766,19 @@
       if (v !== undefined) { config[f.key] = v; }
     });
 
+    // 名称来自独立的名称输入框（不再是 schema 里的 displayName 字段）。
+    // 留空时交给侧车用 defaultEngineName(kind) 兜底，保证列表里不会出现空白行。
+    var nameVal = val("engine-name").trim();
+    // 【不传 rev】：rev 由 storage.js 的 withRevRetry 统一填充。
+    //
+    // 之前这里传了 state.rev（engines.js 自己缓存的值），而 withRevRetry
+    // 只在 `body.rev === undefined` 时才覆盖，导致冲突重试时仍用陈旧 rev，
+    // 无限复现同一个冲突。现在 storage.js 无条件以最新 rev 为准，
+    // 上层模块不再自己缓存 rev —— 单一权威来源，不会出现两份 rev 打架。
     var payload = {
       kind: state.editingKind,
-      name: (config.displayName || config.name || "").trim(),
-      config: config,
-      rev: state.rev
+      name: nameVal || defaultNameFor(state.editingKind),
+      config: config
     };
     if (state.editing) { payload.id = state.editing.id; }
     // 只有用户动过密钥框才传 secrets：
@@ -815,9 +892,21 @@
     on("engine-kind", "change", function () {
       state.editingKind = val("engine-kind");
       state.secretTouched = false;
+      // 切换类型时同步默认名（仅当用户没手动改过名称）
+      syncNameToKind(state.editingKind);
       renderKindDesc();
       renderFields();
       clearFormError();
+    });
+
+    // 名称框：用户一旦手动输入就标记为「已定名」，之后切类型不再覆盖。
+    //
+    // 用 input 事件而非 change：change 只在失焦时触发，用户改完名字
+    // 直接点「保存」的话 change 可能还没触发，nameTouched 仍是 false。
+    // 更稳的判定是「当前值是否还等于默认名」—— 用户把名字改回默认值时
+    // 会自动恢复跟随行为，这比单纯的布尔标志更符合直觉。
+    on("engine-name", "input", function () {
+      state.nameTouched = !nameIsDefault(state.editingKind);
     });
 
     // 点背景关闭弹框

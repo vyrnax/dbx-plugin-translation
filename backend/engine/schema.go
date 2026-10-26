@@ -81,9 +81,21 @@ type Field struct {
 
 // Schema 是一个引擎类型的完整表单描述。
 type Schema struct {
-	Kind          string  `json:"kind"`              // 引擎类型标识（Register 时自动填入）
-	Label         string  `json:"label"`             // 显示名（中文）
-	LabelEn       string  `json:"labelEn,omitempty"` // 显示名（英文）
+	Kind    string `json:"kind"`              // 引擎类型标识（Register 时自动填入）
+	Label   string `json:"label"`             // 显示名（中文）
+	LabelEn string `json:"labelEn,omitempty"` // 显示名（英文）
+	// DefaultName / DefaultNameEn 是新建该类型引擎时【自动填入】的名称。
+	//
+	// 为什么放在 schema 里而不是前端硬编码：
+	//   同一类型可以添加多个实例（例如两个不同的 OpenAI 兼容端点），
+	//   用户必须靠名称区分它们。默认名要能一眼看出是哪家服务
+	//   （「阿里云翻译」而不是「aliyun」），这属于引擎自身的知识，
+	//   应该和字段定义放在一起。前端硬编码会破坏「新增引擎前端零改动」。
+	//
+	// 前端行为：选了类型就填入默认名；用户改过名称后【不再覆盖】（脏值跟踪）；
+	//   切换类型时，若名称仍等于上一个类型的默认名则跟着换，否则保留用户输入。
+	DefaultName   string  `json:"defaultName,omitempty"`
+	DefaultNameEn string  `json:"defaultNameEn,omitempty"`
 	Description   string  `json:"description,omitempty"`
 	DescriptionEn string  `json:"descriptionEn,omitempty"`
 	Streaming     bool    `json:"streaming"` // 是否支持流式输出

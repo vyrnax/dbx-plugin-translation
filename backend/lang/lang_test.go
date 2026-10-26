@@ -226,9 +226,10 @@ func TestIsValid(t *testing.T) {
 
 // TestKnownKinds 验证已注册引擎清单完整。
 func TestKnownKinds(t *testing.T) {
+	// 8 类引擎：大模型类 2 个（openai / localcli）+ 传统机翻 6 个
 	want := map[string]bool{
-		"openai": true, "localcli": true, "deepl": true,
-		"baidu": true, "youdao": true, "aliyun": true,
+		"openai": true, "localcli": true, "deepl": true, "google": true,
+		"baidu": true, "youdao": true, "aliyun": true, "tencent": true,
 	}
 	got := KnownKinds()
 	if len(got) != len(want) {
@@ -241,14 +242,52 @@ func TestKnownKinds(t *testing.T) {
 	}
 }
 
-// TestMaps_AllValuesAreValidEngineCodes 验证映射表的值都非空（auto 在 deepl 下例外）。
+// autoMeansOmit 列出「用空串表示自动检测」的引擎。
+//
+// 这些引擎的 API 约定是【省略源语言参数】而非传一个特殊值：
+//   - DeepL：不传 source_lang 即自动检测（传空串会 400）
+//   - Google：不传 source 即自动检测
+//
+// 因此它们的 auto 映射为空串是【有意设计】，不是漏填。
+// 对应的适配器必须检查「映射结果非空才设置参数」——
+// google.go 与 deepl.go 都有 `if src != ""` 这道判断，
+// 各自的单元测试覆盖了「auto 时请求体不含 source 字段」。
+var autoMeansOmit = map[string]bool{"deepl": true, "google": true}
+
+// TestMaps_AllValuesAreValidEngineCodes 验证映射表的值都非空。
+//
 // 空值会让上游收到空语言参数，报错信息往往很难懂。
+// 唯一例外是 autoMeansOmit 里那些引擎的 auto 键（见上方说明）。
 func TestMaps_AllValuesAreValidEngineCodes(t *testing.T) {
 	for kind, m := range maps {
 		for code, v := range m {
-			if v == "" && !(kind == "deepl" && code == Auto) {
-				t.Errorf("映射表 %s[%q] 为空值", kind, code)
+			if v == "" && !(code == Auto && autoMeansOmit[kind]) {
+				t.Errorf("映射表 %s[%q] 为空值（若该引擎确实用「省略参数」表示自动检测，"+
+					"请把它加进 autoMeansOmit，并确认适配器有「映射结果非空才设置参数」的判断）", kind, code)
 			}
+		}
+	}
+}
+
+// TestMaps_AutoOmitEnginesHaveEmptyAuto 反向验证：
+// autoMeansOmit 里声明的引擎，其 auto 映射【必须】是空串。
+//
+// 这条与上一条互补，防止有人改了映射表却忘了同步 autoMeansOmit，
+// 或反过来 —— 两边不一致时，要么测试误报，要么真正的空值漏检。
+func TestMaps_AutoOmitEnginesHaveEmptyAuto(t *testing.T) {
+	for kind := range autoMeansOmit {
+		m, ok := maps[kind]
+		if !ok {
+			t.Errorf("autoMeansOmit 声明了 %q，但 maps 里没有这个引擎", kind)
+			continue
+		}
+		v, exists := m[Auto]
+		if !exists {
+			t.Errorf("引擎 %q 用省略参数表示自动检测，但映射表里没有 %s 键", kind, Auto)
+			continue
+		}
+		if v != "" {
+			t.Errorf("引擎 %q 在 autoMeansOmit 里，但 %s 映射为 %q 而非空串", kind, Auto, v)
 		}
 	}
 }

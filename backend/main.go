@@ -61,7 +61,19 @@ import (
 	"github.com/gaogao/translation/chunk"
 	dbxpluginsdk "github.com/gaogao/translation/dbxsdk"
 	"github.com/gaogao/translation/engine"
-	_ "github.com/gaogao/translation/engine/openai" // 注册 openai 引擎
+	// 引擎注册：每个子包在 init() 里调用 engine.Register，
+	// 这里用空白导入触发。新增引擎 = 新增一个子包 + 这里加一行，
+	// 前端零改动（表单由 translate/schema 动态渲染）。
+	//
+	// 导入顺序即 UI 里引擎类型下拉框的展示顺序。
+	_ "github.com/gaogao/translation/engine/aliyun"   // 阿里云翻译（ACS3-HMAC-SHA256）
+	_ "github.com/gaogao/translation/engine/baidu"    // 百度翻译（MD5 签名）
+	_ "github.com/gaogao/translation/engine/deepl"    // DeepL（REST，无流式）
+	_ "github.com/gaogao/translation/engine/google"   // Google 翻译（API Key）
+	_ "github.com/gaogao/translation/engine/localcli" // 本地 CLI 代理（claude / codex，无需 API Key）
+	_ "github.com/gaogao/translation/engine/openai"   // OpenAI 兼容大模型（SSE 流式）
+	_ "github.com/gaogao/translation/engine/tencent"  // 腾讯云翻译（TC3-HMAC-SHA256）
+	_ "github.com/gaogao/translation/engine/youdao"   // 有道翻译（SHA256 签名）
 	"github.com/gaogao/translation/lang"
 	"github.com/gaogao/translation/secret"
 	"github.com/gaogao/translation/store"
@@ -77,7 +89,7 @@ import (
 // 运行时反读保证了「包里的 manifest 说什么版本，侧车就自报什么版本」。
 const (
 	pluginID      = "com.gaogao.translation"
-	pluginVersion = "0.1.0"
+	pluginVersion = "0.2.0"
 )
 
 // 全局在飞翻译任务上限。
@@ -528,9 +540,14 @@ func (p *plugin) handleSchema() (any, *RPCError) {
 	kinds := make([]map[string]any, 0, len(schemas))
 	for _, s := range schemas {
 		kinds = append(kinds, map[string]any{
-			"kind":          s.Kind,
-			"label":         s.Label,
-			"labelEn":       s.LabelEn,
+			"kind":    s.Kind,
+			"label":   s.Label,
+			"labelEn": s.LabelEn,
+			// defaultName / defaultNameEn 供前端「选类型自动补全名称」使用。
+			// 同一类型可以添加多个实例（例如两个不同的 OpenAI 兼容端点），
+			// 用户必须靠名称区分，所以默认名要能一眼看出是哪家服务。
+			"defaultName":   s.DefaultName,
+			"defaultNameEn": s.DefaultNameEn,
 			"description":   s.Description,
 			"descriptionEn": s.DescriptionEn,
 			"streaming":     s.Streaming,
@@ -800,17 +817,23 @@ func extractSecrets(m map[string]any) string {
 }
 
 // defaultEngineName 为未命名的引擎生成一个可读的默认名。
+// defaultEngineName 返回引擎类型的默认名称。
+//
+// 【从 schema 读取，不再维护第二份名称表】：
+// 之前这里硬编码了一个 kind → 名称的 map，与各引擎 schema.go 里的
+// DefaultName 字段重复。两份定义必然逐渐漂移 —— 新增引擎时改了 schema
+// 却忘了改这里，用户就会看到「aliyun」这种原始 kind 而不是「阿里云翻译」。
+//
+// 现在单一事实来源是 schema.DefaultName，前端自动补全与后端兜底
+// 用的是同一个值，不可能不一致。
 func defaultEngineName(kind string) string {
-	names := map[string]string{
-		"openai":   "OpenAI 兼容",
-		"deepl":    "DeepL",
-		"baidu":    "百度翻译",
-		"youdao":   "有道翻译",
-		"aliyun":   "阿里云翻译",
-		"localcli": "本地 CLI",
-	}
-	if n, ok := names[kind]; ok {
-		return n
+	if _, sch, ok := engine.Lookup(kind); ok {
+		if sch.DefaultName != "" {
+			return sch.DefaultName
+		}
+		if sch.Label != "" {
+			return sch.Label
+		}
 	}
 	return kind
 }
@@ -1001,11 +1024,50 @@ func (p *plugin) buildEngine(engineID string, adhocKind string, adhocConfig map[
 	}
 	_ = prefs
 
-	e, err := engine.Build(kind, engine.Config(config), engine.Secrets{"apiKey": plain, "secretKey": plain, "appSecret": plain}, opts)
+	e, err := engine.Build(kind, engine.Config(config), secretsFor(kind, plain), opts)
 	if err != nil {
 		return nil, store.Engine{}, err
 	}
 	return e, rec, nil
+}
+
+// secretsFor 按引擎 schema 声明的 Secret 字段名，把明文密钥放进对应的键。
+//
+// 为什么不能硬编码几个键名：
+//
+//	各引擎的密钥字段名本来就不同 —— openai/deepl/google 是 apiKey，
+//	baidu/tencent 是 secretKey，youdao 是 appSecret，aliyun 是 accessKeySecret。
+//	之前这里硬编码了 `Secrets{"apiKey":…, "secretKey":…, "appSecret":…}` 三个键，
+//	漏了 accessKeySecret，导致【阿里云引擎永远拿不到密钥】，
+//	用户明明填了却报「AccessKey Secret 不能为空」。
+//
+//	这类 bug 的隐蔽之处在于：它只影响某一个引擎，其它七个都正常，
+//	测试若没覆盖到那个引擎就完全发现不了。
+//
+// 现在改为从 schema 反查：schema 里标了 `Secret: true` 的字段就是该引擎的密钥键。
+// 这样【新增引擎时只要 schema 写对，这里自动就对了】，不存在漏配的可能。
+//
+// 兜底：万一 schema 没声明 Secret 字段（例如 localcli 本就不需要密钥），
+// 仍按常见键名各放一份，保证向后兼容。
+func secretsFor(kind, plain string) engine.Secrets {
+	out := engine.Secrets{}
+	if plain == "" {
+		return out
+	}
+	if _, sch, ok := engine.Lookup(kind); ok {
+		for _, f := range sch.Fields {
+			if f.Secret {
+				out[f.Key] = plain
+			}
+		}
+	}
+	if len(out) == 0 {
+		// schema 未声明 Secret 字段时的兜底：覆盖各引擎的常见命名
+		for _, k := range []string{"apiKey", "secretKey", "appSecret", "accessKeySecret"} {
+			out[k] = plain
+		}
+	}
+	return out
 }
 
 // semaphore 返回指定引擎的并发信号量（懒创建）。

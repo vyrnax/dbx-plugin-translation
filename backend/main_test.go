@@ -584,6 +584,88 @@ func TestExtractSecrets(t *testing.T) {
 	}
 }
 
+// TestSecretsFor_AllEnginesCanReadSecret 验证【每个】引擎都能拿到自己的密钥。
+//
+// 这条测试是针对一个真实线上 bug 补的：buildEngine 曾经硬编码
+// `Secrets{"apiKey":…, "secretKey":…, "appSecret":…}` 三个键，
+// 而阿里云适配器读的是 accessKeySecret —— 结果阿里云引擎永远拿不到密钥，
+// 用户明明填了 AccessKey Secret，点「测试连接」却报「不能为空」。
+//
+// 这类 bug 极隐蔽：只影响一个引擎，其余七个都正常，
+// 只要测试没逐个引擎覆盖就发现不了。因此这里遍历【全部已注册引擎】，
+// 对每个引擎都走一遍「构造 → 取密钥」，确保 schema 声明的 Secret 字段名
+// 与适配器实际读取的键名对得上。
+func TestSecretsFor_AllEnginesCanReadSecret(t *testing.T) {
+	const fakeSecret = "sk-regression-test-secret-value"
+
+	kinds := engine.Kinds()
+	if len(kinds) < 8 {
+		t.Fatalf("已注册引擎数 = %d, 期望至少 8（本测试的意义在于全覆盖）", len(kinds))
+	}
+
+	for _, kind := range kinds {
+		t.Run(kind, func(t *testing.T) {
+			_, sch, ok := engine.Lookup(kind)
+			if !ok {
+				t.Fatalf("Lookup(%q) 失败", kind)
+			}
+
+			// 找出 schema 里声明的 Secret 字段
+			var secretKeys []string
+			for _, f := range sch.Fields {
+				if f.Secret {
+					secretKeys = append(secretKeys, f.Key)
+				}
+			}
+
+			// 不需要密钥的引擎（localcli）：secretsFor 应返回空表，且不报错
+			if !sch.NeedsSecret {
+				got := secretsFor(kind, fakeSecret)
+				if len(secretKeys) != 0 {
+					t.Errorf("NeedsSecret=false 但 schema 里有 Secret 字段: %v", secretKeys)
+				}
+				_ = got
+				return
+			}
+			if len(secretKeys) == 0 {
+				t.Fatal("NeedsSecret=true 但 schema 里没有 Secret 字段")
+			}
+
+			// 核心断言：secretsFor 产出的表必须覆盖 schema 声明的每个 Secret 键
+			got := secretsFor(kind, fakeSecret)
+			for _, k := range secretKeys {
+				if got[k] != fakeSecret {
+					t.Errorf("引擎 %q 的密钥键 %q 未被填充（适配器会读到空值，"+
+						"表现为「用户填了密钥却报不能为空」）。secretsFor 返回的键: %v",
+						kind, k, keysOf(got))
+				}
+			}
+		})
+	}
+}
+
+// TestSecretsFor_EmptyPlain 验证空密钥返回空表而非塞入空值。
+//
+// 塞入空值会让适配器的「密钥不能为空」校验失效判断变得混乱。
+func TestSecretsFor_EmptyPlain(t *testing.T) {
+	got := secretsFor("openai", "")
+	if len(got) != 0 {
+		t.Errorf("空密钥应返回空表，得到 %v", keysOf(got))
+	}
+	// 未知 kind 也不应 panic
+	if got := secretsFor("不存在的引擎", "x"); len(got) == 0 {
+		t.Error("未知 kind 应走兜底分支填充常见键名")
+	}
+}
+
+func keysOf(m engine.Secrets) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func TestNewID_Unique(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 2000; i++ {
@@ -598,12 +680,66 @@ func TestNewID_Unique(t *testing.T) {
 	}
 }
 
+// TestDefaultEngineName 验证默认引擎名来自 schema（单一事实来源）。
+//
+// 【刻意不断言具体名称字符串】：defaultEngineName 现在从 schema.DefaultName 读取，
+// 断言 "大模型翻译" 这类字面值只会把测试和文案绑死 —— 改个显示名就要改测试，
+// 而测试真正该保证的是「后端兜底名与前端自动补全名是同一个值」。
+//
+// 这条不变量很重要：前端选类型时自动填入 schema.defaultName，
+// 用户留空保存时后端用 defaultEngineName(kind) 兜底。
+// 两者若不一致，用户会看到「填的时候是 A，保存后变成 B」。
 func TestDefaultEngineName(t *testing.T) {
-	if got := defaultEngineName("openai"); got != "OpenAI 兼容" {
-		t.Errorf("openai 默认名 = %q", got)
+	kinds := engine.Kinds()
+	if len(kinds) == 0 {
+		t.Fatal("没有注册任何引擎")
 	}
+	for _, kind := range kinds {
+		_, sch, ok := engine.Lookup(kind)
+		if !ok {
+			t.Errorf("Lookup(%q) 失败", kind)
+			continue
+		}
+		got := defaultEngineName(kind)
+		if got == "" {
+			t.Errorf("引擎 %q 的默认名为空（列表里会出现空白行）", kind)
+			continue
+		}
+		// 核心不变量：后端兜底名必须等于 schema 里的默认名
+		if sch.DefaultName != "" && got != sch.DefaultName {
+			t.Errorf("引擎 %q: defaultEngineName=%q 与 schema.DefaultName=%q 不一致"+
+				"（前端自动补全与后端兜底会给出不同名称）", kind, got, sch.DefaultName)
+		}
+		// 默认名不应是原始 kind（那说明 schema 没配 DefaultName，用户会看到 "aliyun"）
+		if got == kind {
+			t.Errorf("引擎 %q 的默认名等于 kind 本身，说明 schema 缺少 DefaultName", kind)
+		}
+	}
+
+	// 未知类型回退为 kind 本身（不 panic、不返回空）
 	if got := defaultEngineName("未知类型"); got != "未知类型" {
 		t.Errorf("未知类型应回退为 kind 本身，得到 %q", got)
+	}
+	if got := defaultEngineName(""); got != "" {
+		t.Errorf("空 kind 应返回空串，得到 %q", got)
+	}
+}
+
+// TestSchema_AllKindsHaveDefaultName 验证每个已注册引擎都配了 defaultName。
+//
+// 这是「选类型自动补全名称」功能的前提：缺了它，前端只能填入 kind 原文
+// （例如 "aliyun"），用户看到一串英文小写标识会以为是 bug。
+func TestSchema_AllKindsHaveDefaultName(t *testing.T) {
+	for _, sch := range engine.Schemas() {
+		if sch.DefaultName == "" {
+			t.Errorf("引擎 %q 的 schema 缺少 DefaultName（前端无法自动补全名称）", sch.Kind)
+		}
+		if sch.DefaultNameEn == "" {
+			t.Errorf("引擎 %q 的 schema 缺少 DefaultNameEn（英文界面下无法自动补全）", sch.Kind)
+		}
+		if sch.Label == "" {
+			t.Errorf("引擎 %q 的 schema 缺少 Label", sch.Kind)
+		}
 	}
 }
 

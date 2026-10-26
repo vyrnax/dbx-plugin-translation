@@ -113,6 +113,7 @@ CRITICAL = [
     "engine-list", "engine-empty", "btn-add-engine",
     # 引擎弹框
     "engine-modal", "engine-modal-title", "engine-kind", "engine-kind-desc",
+    "engine-name", "engine-name-hint",
     "engine-fields", "engine-form-error", "btn-engine-save", "btn-engine-test",
     "btn-engine-cancel", "btn-engine-delete", "btn-close-engine-modal",
     # 历史页

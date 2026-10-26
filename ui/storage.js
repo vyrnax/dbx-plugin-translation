@@ -55,7 +55,7 @@
   var MAX_UPSTREAM_BYTES = 1500 * 1000;
 
   /* ============ 版本号（打包脚本会校验它与 manifest.version 一致）============ */
-  var UI_VERSION = "0.1.0";
+  var UI_VERSION = "0.2.0";
 
   /* ============ 诊断日志 ============
    * 安装后白屏 / 存不上时，这份报告是唯一的排查证据。
@@ -647,7 +647,16 @@
     for (var k in (payload || {})) {
       if (Object.prototype.hasOwnProperty.call(payload, k)) { body[k] = payload[k]; }
     }
-    if (body.rev === undefined) { body.rev = status.rev; }
+    // 【关键】rev 一律以本层的 status.rev 为准，无条件覆盖调用方传来的值。
+    //
+    // 之前的写法是 `if (body.rev === undefined) { body.rev = status.rev; }`，
+    // 而 engines.js 的 buildPayload 已经把 rev 塞进 payload 了，
+    // 于是这个分支永远不成立 —— 重试时用的仍是那个陈旧 rev，
+    // 冲突无限复现（诊断日志里「本地 rev=59 服务端 rev=60」反复出现同一个 59）。
+    //
+    // storage.js 是唯一能从每个 RPC 响应里持续刷新 rev 的地方，
+    // 因此它是 rev 的唯一权威来源；上层模块不该自己缓存 rev。
+    body.rev = status.rev;
 
     return rpc(method, body, RPC_TIMEOUT).then(function (res) {
       if (res && typeof res === "object") {

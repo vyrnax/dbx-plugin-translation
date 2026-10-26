@@ -228,6 +228,39 @@ async function main() {
     check("openai 的 languages 含 auto（支持源语言自动检测）",
       (openai?.languages || []).includes("auto"));
 
+    // 主流引擎应全部注册（阶段 2 目标：8 类）
+    const wantKinds = ["openai", "deepl", "google", "baidu", "youdao", "aliyun", "tencent"];
+    const gotKinds = kinds.map((k) => k.kind);
+    for (const wk of wantKinds) {
+      check(`引擎 ${wk} 已注册`, gotKinds.includes(wk), gotKinds.join(","));
+    }
+
+    // 每个引擎都必须有 defaultName / defaultNameEn ——
+    // 这是「选类型自动补全名称」功能的前提，缺了前端只能填入 kind 原文
+    // （例如 "aliyun"），用户看到一串小写英文会以为是 bug。
+    for (const k of kinds) {
+      check(`引擎 ${k.kind} 有 defaultName`, !!k.defaultName, String(k.defaultName));
+      check(`引擎 ${k.kind} 有 defaultNameEn`, !!k.defaultNameEn, String(k.defaultNameEn));
+    }
+
+    // defaultName 不应等于 kind 本身（那说明 schema 没配）
+    for (const k of kinds) {
+      check(`引擎 ${k.kind} 的 defaultName 不是 kind 原文`,
+        k.defaultName !== k.kind, String(k.defaultName));
+    }
+
+    // 传统机翻引擎都不支持流式，LLM 类支持 —— 前端据此决定是否显示流式光标
+    check("openai 支持流式而传统机翻不支持",
+      kinds.find((k) => k.kind === "openai")?.streaming === true &&
+      wantKinds.slice(1).every((wk) => kinds.find((k) => k.kind === wk)?.streaming === false));
+
+    // 有道是唯一不支持源语言自动检测的引擎，schema 必须如实反映
+    check("有道不支持 auto（supportsAuto=false）",
+      kinds.find((k) => k.kind === "youdao")?.supportsAuto === false);
+    check("其余引擎支持 auto",
+      wantKinds.filter((k) => k !== "youdao")
+        .every((wk) => kinds.find((k) => k.kind === wk)?.supportsAuto === true));
+
     // ---------- 4) 引擎 CRUD ----------
     console.log("\n=== 4. engines/save + list + get ===");
     const idSave = send(proc, "engines/save", {

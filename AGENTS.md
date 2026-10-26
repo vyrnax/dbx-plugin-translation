@@ -653,12 +653,24 @@ var RPC_TIMEOUT = 30000, READY_TIMEOUT = 8000, CTX_TIMEOUT = 2500,
 | `translate/schema` 加载失败，引擎管理页「新建引擎」表单是空的 | `E.init()` 在 `S.init()` **之前**执行，此时桥接未就绪，`rpcRaw` 直接 reject 且**永不重试** | ① `rpcRaw` 改为桥接未就绪时先 `waitBridge()` 再调用；② `E.init()`/`H.init()` 移到 `S.init().then()` 内；③ `E.init()` 的 Promise 加 catch 并 toast 提示（否则用户只看到空白弹框，不知道是 schema 没加载） |
 | 语言/主题跟随「有时生效有时不生效」 | 事件通道有三重不确定性：新版宿主 target=document 且不冒泡、老宿主 target=window、某些宿主只发 init 不发 env。任一情况没覆盖就是静默失效 | 三重保险：window+document 双注册且都 capture、`onInit` 兜底、**1.5 秒低频轮询**（比较「locale+appearance+token 数」指纹，无变化则什么都不做）。轮询与事件处理器**共享指纹**，避免重复重绘 |
 
+| 点取消后要等 29 秒才停（CLI 是 `sleep 30`） | 两个原因叠加：① `for scanner.Scan()` 是阻塞读，CLI 不输出时循环体里的 `ctx.Err()` 检查【根本没机会执行】；② Windows 上 `.bat` 会形成 `cmd.exe → 实际命令` 的进程树，`Process.Kill()` 只杀 cmd.exe，真正的命令变孤儿进程**继续持有 stdout 管道写端**，读取方依旧阻塞 | ① 读取移入 goroutine，主流程用 `select { case <-results / case <-runCtx.Done() }`；② 按平台实现 `killTree`：Windows 用 `taskkill /F /T /PID`，Unix 用 `Setpgid` + `kill(-pid)`。修复后取消耗时 29.4s → 0.65s |
+| 注入防护测试「通过」了，但把实现改成 shell 拼接后**依然通过** | 判据是「payload 尝试创建 marker 文件，断言文件不存在」，而 payload 里的 `touch` 在 Windows 上根本不存在 —— 无论有没有经过 shell，marker 都不会被创建，测试永远 PASS（空转） | 改用强判据：假 CLI 把**实际收到的 argv 写成 JSON 文件**，测试读文件断言「与传入的参数数组逐字相等」。经过 shell 会切词/吞运算符，参数个数必变，判据必然失败。已用变异测试验证（改成 `cmd.exe /C` 拼接后测试正确 FAIL） |
+| 想按行还原子进程参数，却只得到 1 行 | `runCLI` 把各次 emit 的文本**无分隔符拼接**（这对翻译是正确的 —— 增量片段本该直接相连），stdout 无法还原参数边界 | 需要精确参数边界时走**文件**而非 stdout |
+
+| 阿里云填了 AccessKey Secret，点「测试连接」却报「不能为空」 | `buildEngine` 硬编码了 `Secrets{"apiKey":…, "secretKey":…, "appSecret":…}` 三个键，而阿里云适配器读的是 `accessKeySecret` —— 键名对不上，适配器永远读到空值 | 改为 `secretsFor(kind, plain)`：从 schema 反查标了 `Secret: true` 的字段名，用它作键。**新增引擎只要 schema 写对就自动正确**，不存在漏配。并补 `TestSecretsFor_AllEnginesCanReadSecret` 遍历全部引擎做回归（已用变异测试验证该测试确实能抓到原 bug） |
+| 保存引擎反复提示「配置已被其它会话修改，已自动重试」，诊断日志里 `本地 rev=59 服务端 rev=60` 反复出现同一个 59 | 两处叠加：① `withRevRetry` 只在 `body.rev === undefined` 时才填 rev，而 `buildPayload` 已把 engines.js 自己缓存的陈旧 rev 塞进 payload，该分支永不成立，**重试时用的还是陈旧 rev**；② `prefs/set` 与 `engines/*` 共用同一个全局 rev，改一次偏好就让引擎对话框缓存的 rev 失效 | `withRevRetry` 改为**无条件** `body.rev = status.rev`（storage.js 是唯一能从每个 RPC 响应持续刷新 rev 的地方，即 rev 的唯一权威来源）；`buildPayload` 不再自带 rev，上层模块不缓存 rev |
+
 **从这些坑里提炼的两条通用规则**（已并入铁律）：
 
 - **静态闸门的判据必须在 `_buildpkg.js` 与 `_verify.mjs` 之间保持一致**，且都要先剥离注释再扫描。两份闸门判据不一致会产生「本地打包通过、校验失败」的困惑。
 - **凡是「时好时坏」的断言，先怀疑 WAL / 缓存 / 异步时序**。数据库内容检查要覆盖 WAL 文件；异步协议测试要用轮询等待而非固定 sleep。
 - **「跟随宿主」类功能必须在桌面端验证，开发宿主测不出来**。开发宿主与桌面端在事件 target、token 投递范围上都有差异（env 事件冒泡行为、`--font-*` 是否投递）。凡是依赖宿主投递内容的功能，都要在 `_verify.mjs` 里加静态校验作为替代防线。
 - **映射/别名类代码必须双向校验**：既校验「源存在」，也校验「目标被真实消费」。只写映射不核对目标，会产生「代码看起来对、界面就是不变」的静默失效。
+- **安全类测试必须做变异验证**：把实现故意改坏（例如参数数组改成 shell 拼接），确认测试会 FAIL。不做这一步就无法区分「实现安全」和「测试写错了所以永远通过」—— 本项目真的踩过后者，而且是在 Windows 上因为 `touch` 不存在而空转。
+- **凡是「等外部进程/网络」的循环，取消检查不能只放在循环体里**。阻塞读（`scanner.Scan()`、`conn.Read()`）在对方不输出时会让循环体永远得不到执行，必须把读取放进 goroutine，主流程用 `select` 监听 `ctx.Done()`。
+- **杀子进程要考虑进程树**。Windows 的 `.bat`/`.cmd`、Unix 的 shell 脚本都会产生父子进程，只杀直接子进程会留下孤儿继续持有管道，导致「取消无效」与 goroutine 泄漏。
+- **跨模块共享的状态必须有唯一权威来源**。rev 这类「服务端递增、客户端回声」的值，只能由一层持有并从每个响应里刷新；让多个模块各自缓存，必然出现「A 的缓存过期了但 B 不知道」，症状是重试逻辑看似存在却永远用旧值。
+- **凡是「按名字取配置」的地方，名字必须来自同一份 schema**。适配器读 `accessKeySecret`、而调用方塞 `apiKey`，编译器不会报错、七个引擎都正常，只有一个引擎静默失效 —— 这类 bug 只能靠「遍历全部引擎」的测试兜住。
 - **凡是「宿主只在某个阶段才校验」的契约，必须在本地提前校验**。manifest 字段白名单就是典型：打包阶段不报错、安装阶段才炸，而且一次只报一个错。把官方 schema 的约束抄进打包闸门，一次报完全部问题，比逐个试错省几倍时间。
 - **JS 正则字面量里不能出现裸 `/`**。含 URL 或 `//` 的 pattern 一律用 `new RegExp("...")`。
 - **凡是读「宿主桥接属性」的代码，都必须区分 init 前与 init 后**。`dbxPlugin.locale` / `.theme` / `.context` 在 init 消息到达前返回的是闭包初始值而非真实值。任何在 `boot()` 开头读它们的逻辑，都必须在 `ready` 之后**再读一次**。这类 bug 的症状是「某个功能永远停在默认值」，而且因为界面看起来完全正常，用户只会以为「插件不支持」。

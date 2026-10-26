@@ -326,6 +326,19 @@
             <select id="engine-kind" class="select"></select>
             <p id="engine-kind-desc" class="field-desc"></p>
           </div>
+          <!-- 引擎名称：同一类型可以添加多个实例（例如两个不同的 OpenAI 兼容端点），
+               用户必须靠名称区分它们。
+               选择类型后自动填入该类型的默认名（如「阿里云翻译」），用户可自由修改；
+               改过之后再切换类型【不会】覆盖用户输入（脏值跟踪，见 engines.js）。 -->
+          <div class="field">
+            <span class="field-label"><span data-i18n="engineName">引擎名称</span> <em>*</em></span>
+            <input id="engine-name" class="input" type="text" maxlength="60"
+                   autocomplete="off" data-i18n-placeholder="engineNamePlaceholder"
+                   placeholder="例如：阿里云翻译（生产）" />
+            <p id="engine-name-hint" class="field-desc" data-i18n="engineNameHint">
+              同类型可添加多个，用名称区分。留空则使用默认名称。
+            </p>
+          </div>
           <!-- 动态字段容器：由 translate/schema 驱动渲染 -->
           <div id="engine-fields" class="engine-fields"></div>
           <div id="engine-form-error" class="form-error" hidden></div>

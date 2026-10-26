@@ -309,14 +309,88 @@ var aliyunMap = map[string]string{
 	"hu":    "hu",
 }
 
+// googleMap 是 Google Cloud Translation API (v2) 的映射。
+//
+// Google 用标准 BCP-47 标签，但有几个特例：
+//   - 简体中文是 zh-CN、繁体是 zh-TW（不是 zh / zh-Hant）
+//   - 希伯来语官方用 he（旧代码 iw 已废弃但仍被接受）
+//   - 挪威语用 no（Google 不接受 nb）
+//
+// 支持 sourceLanguage=（留空）表示自动检测。
+var googleMap = map[string]string{
+	Auto:    "", // Google 用「省略 sourceLanguage」表示自动检测
+	"zh":    "zh-CN",
+	"zh-TW": "zh-TW",
+	"en":    "en",
+	"ja":    "ja",
+	"ko":    "ko",
+	"fr":    "fr",
+	"de":    "de",
+	"es":    "es",
+	"ru":    "ru",
+	"pt":    "pt",
+	"it":    "it",
+	"ar":    "ar",
+	"th":    "th",
+	"vi":    "vi",
+	"id":    "id",
+	"ms":    "ms",
+	"tr":    "tr",
+	"hi":    "hi",
+	"pl":    "pl",
+	"nl":    "nl",
+	"sv":    "sv",
+	"da":    "da",
+	"fi":    "fi",
+	"no":    "no",
+	"cs":    "cs",
+	"el":    "el",
+	"he":    "he",
+	"uk":    "uk",
+	"ro":    "ro",
+	"hu":    "hu",
+}
+
+// tencentMap 是腾讯云机器翻译（TMT）的映射。
+//
+// 腾讯用 ISO 639-1 风格小写码，但有几个自有写法：
+//   - 简体中文 zh、繁体 zh-TW（与阿里一致）
+//   - 源语言支持 auto
+//
+// 腾讯的语种覆盖比百度/有道窄一些（约 18 种），未列出的语言
+// 会由 Map 返回 ok=false，UI 据此禁用下拉项而不是等翻译失败。
+var tencentMap = map[string]string{
+	Auto:    "auto",
+	"zh":    "zh",
+	"zh-TW": "zh-TW",
+	"en":    "en",
+	"ja":    "ja",
+	"ko":    "ko",
+	"fr":    "fr",
+	"de":    "de",
+	"es":    "es",
+	"ru":    "ru",
+	"pt":    "pt",
+	"it":    "it",
+	"ar":    "ar",
+	"th":    "th",
+	"vi":    "vi",
+	"id":    "id",
+	"ms":    "ms",
+	"tr":    "tr",
+	"hi":    "hi",
+}
+
 // maps 是引擎 kind → 映射表的总索引。新增引擎时在这里加一行即可。
 var maps = map[string]map[string]string{
 	"openai":   openaiMap,
 	"localcli": localcliMap,
 	"deepl":    deeplMap,
+	"google":   googleMap,
 	"baidu":    baiduMap,
 	"youdao":   youdaoMap,
 	"aliyun":   aliyunMap,
+	"tencent":  tencentMap,
 }
 
 // buildLLMMap 为大模型类引擎构造「全语言支持」的映射表。
@@ -418,7 +492,9 @@ func SupportedTargetLangs(kind string) []string {
 
 // KnownKinds 返回已注册映射表的引擎 kind 列表（顺序稳定，便于测试断言）。
 func KnownKinds() []string {
-	order := []string{"openai", "localcli", "deepl", "baidu", "youdao", "aliyun"}
+	// 顺序即 UI 里引擎类型下拉框的展示顺序：
+	// 大模型类在前（覆盖面最广、能力最强），传统机翻按国内使用广度排列。
+	order := []string{"openai", "localcli", "deepl", "google", "baidu", "youdao", "aliyun", "tencent"}
 	out := make([]string, 0, len(order))
 	for _, k := range order {
 		if _, ok := maps[k]; ok {
