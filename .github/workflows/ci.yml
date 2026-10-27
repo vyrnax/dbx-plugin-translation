@@ -8,6 +8,16 @@
 #   又不破坏「产物无 cgo」这个交叉编译的前提。
 #
 #   注意：-race 只用于【测试】，发布产物始终用 CGO_ENABLED=0 构建。
+# 【Go 版本必须与 release.yml 完全一致，且 pin 到精确补丁号 1.21.13】
+#   原因：sidecar 二进制里内嵌了 Go 的 VCS/工具链戳（go version -m 可见 go1.21.13 与
+#   vcs.revision）。商店审核会核对「被签名的字节能否由声明的源码 + 声明的工具链复现」。
+#   写 "1.21" 这种浮动版本会随 runner 镜像更新而漂移，同一 tag 两次构建出不同字节
+#   → 审核者对不上哈希。v0.2.1 就是因为本地 1.27.3、CI 1.21.13 两条工具链
+#   产出不同 sidecar 而被打回。
+#
+#   为什么固定 1.21.13 而不是更新的版本：go.mod 声明 go 1.21，而 tag v0.2.1 那次 CI
+#   已用 1.21.13 成功构建过全部 5 个 target —— 这是【已被 CI 实证可用】的工具链。
+#   审核者的诉求从来不是「用哪个版本」，而是「CI 与 release 用同一个且固定」。
 name: CI
 
 on:
@@ -25,7 +35,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.21"
+          go-version: "1.21.13"
           cache-dependency-path: backend/go.sum
 
       - name: gofmt 检查（应无输出）
@@ -56,7 +66,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.21"
+          go-version: "1.21.13"
           cache-dependency-path: backend/go.sum
 
       - uses: actions/setup-node@v4
@@ -98,7 +108,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.21"
+          go-version: "1.21.13"
           cache-dependency-path: backend/go.sum
 
       - uses: actions/setup-node@v4

@@ -1,0 +1,258 @@
+# 发布流水线：从 tag 由 GitHub Actions 构建全部平台的未签名候选包，并上传到同名 Release。
+#
+# 【为什么必须走 CI，而不是本地构建后手工上传】
+#   DBX 官方商店首次上架审核时会核对 sidecar 二进制内嵌的 Go VCS 戳：
+#     vcs.revision   —— 构建时的 git commit
+#     vcs.modified   —— 构建时工作树是否干净
+#   「本地构建 + 手工上传」会产生 provenance 硬伤：被签名的字节来自一个公开仓库里
+#   不存在的 commit，审核者既无法 `git fetch` 到该 revision，也无法把 tag 那次 CI 的
+#   产物哈希与 release 资产对上（本项目 v0.2.1 正是因此被打回）。
+#   → 唯一可核验的做法：tag 推送后由 CI 检出该 tag、用固定工具链构建、直接上传到 Release。
+#
+# 【为什么复用官方 reusable workflow】
+#   t8y2/dbx 的 plugin-release-reusable.yml 会：
+#     - 按平台矩阵在【对应平台的 runner】上各自构建（不交叉编译，每个包都是真机产物）
+#     - 校验 artifact.json 的 sha256/size 与 .dbxp 字节一致
+#     - 拒绝含 signature.json 的包（候选必须未签名）
+#     - 校验各 target 的 manifest 身份（id/name/description/publisher/version/permissions）一致
+#     - 汇总出 release-candidates.json（{plugin, artifacts} 结构，正是 dbx-store 的
+#       scripts/sync-release-candidate.mjs 所消费的格式）
+#     - 用 gh release upload --clobber 上传到指定 tag 的 Release
+#   这些校验自己再写一遍只会与官方漂移，直接复用。
+#
+# 【工具链固定】
+#   Go 版本 pin 到精确补丁号（1.21.13，与 ci.yml 一致），不用 "1.21" 这类浮动写法 ——
+#   浮动写法会随 runner 镜像更新而漂移，同一 tag 重建出不同字节，
+#   审核者就无法复现 release 里的哈希。ci.yml 用同一版本，保证测试与发布一致。
+#
+# 【产出】
+#   Release 资产：5 × .dbxp、5 × .artifact.json、release-candidates.json（官方 {plugin,artifacts} 格式）
+#   另需手工提交到 dbx-store 的扁平 schema 候选文件，由 _release.mjs 一并生成：
+#   dist/store-candidate/com.vyrnax.translation.json
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: 要发布的 tag（例如 v0.2.2）。注意：必须先在 Actions 页面把 ref 选成该 tag
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+# 同一 tag 的重复触发排队而不互相取消：Release 资产上传不是可中断的幂等操作
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: 解析 tag 并创建正式 Release
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: 解析并校验 tag
+        id: resolve
+        shell: bash
+        env:
+          # 经 env 传递而非 ${{ }} 直接插值：workflow_dispatch 的输入是用户可控字符串，
+          # 直接插进脚本体会造成表达式注入（恶意输入可闭合引号执行任意命令）。
+          INPUT_TAG: ${{ inputs.release-tag }}
+        run: |
+          set -euo pipefail
+          # 两种触发路径都必须让【reusable workflow 内部那次不带 ref 的 checkout】检出同一个 tag。
+          # reusable 的 build job 用 actions/checkout@v4 且不传 ref，因此它检出的就是本 workflow
+          # 的 github.ref —— 所以这里必须强制 GITHUB_REF 就是目标 tag，否则构建的是别的 commit，
+          # 又会退化成「字节与声明源码对不上」。
+          tag="${INPUT_TAG:-}"
+          # 非空输入必须匹配白名单正则（v + semver）。
+          # 用白名单而不是黑名单排除危险字符：tag 名本就只可能是这个形态，
+          # 白名单一次挡住路径分隔符、空白、引号等所有注入面。
+          if [ -n "$tag" ] && ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+            echo "::error::release-tag 格式非法：'$tag'（应形如 v0.2.2）"
+            exit 1
+          fi
+          if [ -z "$tag" ]; then
+            ref="${GITHUB_REF#refs/tags/}"
+            if [ "$ref" = "$GITHUB_REF" ]; then
+              echo "::error::无法从 GITHUB_REF='$GITHUB_REF' 解析 tag。workflow_dispatch 时请在 Actions 页面把 ref 选成目标 tag，并填写 release-tag。"
+              exit 1
+            fi
+            tag="$ref"
+          fi
+          # 兜底：从 GITHUB_REF 提取出来的 tag 也必须是 v 前缀
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::tag 必须以 v 开头（当前：$tag）"; exit 1 ;;
+          esac
+          if [ "$GITHUB_REF" != "refs/tags/$tag" ]; then
+            echo "::error::本次运行的 ref 是 '$GITHUB_REF'，而不是 'refs/tags/$tag'。"
+            echo "::error::reusable workflow 会按 github.ref 检出源码，两者不一致会导致构建出与 tag 无关的字节。"
+            echo "::error::请在 Actions 页面选择 tag '$tag' 后重新运行。"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "发布 tag：$tag（commit $GITHUB_SHA）"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
+
+      # tag 名必须与 manifest.version 对得上（v0.2.2 ↔ 0.2.2）。
+      # 不一致说明忘了改版本号就打 tag —— 构建出的包身份与 Release 不符，
+      # 商店 signing 阶段会直接拒绝，所以在最前面挡住。
+      - name: 校验 tag 与 manifest 版本一致
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.resolve.outputs.tag }}"
+          ver="$(node -p "require('./manifest.json').version")"
+          if [ "v$ver" != "$tag" ]; then
+            echo "::error::tag '$tag' 与 manifest.version '$ver' 不一致（期望 tag = v$ver）"
+            exit 1
+          fi
+          echo "版本一致：$tag ↔ $ver"
+
+      - name: 创建 / 更新正式 Release（非 draft、非 prerelease）
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          notes_file="RELEASE_NOTES.md"
+          [ -f "$notes_file" ] || notes_file=""
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # 已存在：确保它是【正式发布】。
+            # 商店的 discover-plugin-releases.mjs 只认 !draft && !prerelease 的 Release，
+            # prerelease 会被直接跳过 → 候选永远同步不进目录（v0.2.1 的阻断项之一）。
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest
+            echo "已把 $TAG 转为正式发布"
+          else
+            args=(release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --target "$GITHUB_SHA")
+            if [ -n "$notes_file" ]; then args+=(--notes-file "$notes_file"); else args+=(--generate-notes); fi
+            gh "${args[@]}"
+            echo "已创建正式发布 $TAG"
+          fi
+
+  build:
+    name: 从 tag 构建并发布候选包
+    needs: prepare
+    # pin 到具体 commit 而不是 @main：@main 是浮动引用，上游一改行为，
+    # 同一个 tag 重建出的字节就可能变化，审核者无法复现 release 里的哈希。
+    # 需要升级时显式改这行 sha，并在 PR 里说明。
+    uses: t8y2/dbx/.github/workflows/plugin-release-reusable.yml@374d60573d3a6ae2bbc3035d4d71e63f4fe546b1
+    permissions:
+      contents: write
+    with:
+      release-tag: ${{ needs.prepare.outputs.tag }}
+      # reusable workflow 会为矩阵里的每个 target 注入 DBX_PLUGIN_TARGET，
+      # 并在【对应平台的 runner】上执行这条命令 → 每个包都是真机构建 + 真机探针校验。
+      # _release.mjs 接受 target 列表参数：构建 + 打包 + 逐包校验一次完成。
+      package-command: node _release.mjs "$DBX_PLUGIN_TARGET"
+      go-version: "1.21.13"
+      node-version: "22"
+      # 本项目自己实现打包器（_buildpkg.js，复刻官方 zip 的三条硬规则 + Unix 权限位），
+      # 不需要 dbx-plugin CLI，也不需要 Rust 工具链 —— 关掉可省下几分钟构建时间。
+      install-plugin-cli: false
+      rust-toolchain: ""
+    secrets: inherit
+
+  summary:
+    name: 生成商店候选文件并输出哈希（回帖给审核者用）
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    steps:
+      # 必须检出【同一个 tag】：_storecandidate.mjs 要读 manifest.json 与 .dbx-store.json，
+      # 并校验 tag 与 manifest.version 一致。检出别的 ref 会让这层校验失去意义。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # 只为下面那步 `go version -m` 读二进制元信息，版本与构建时一致
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21.13"
+
+      # 【所有下载与产物都写到 $RUNNER_TEMP，绝不写进仓库工作树】
+      #
+      # 为什么这条很关键：_storecandidate.mjs 的 provenance 闸门会跑 `git status --porcelain`
+      # 判断工作树是否干净。如果把 Release 资产下载到仓库内的 assets/ 或 probe/，
+      # 工作树立刻变脏 → 闸门判定「字节不可复现」→ 这个 job 自己把自己卡死。
+      # （assets/ 还是打包输入目录，往里塞 .dbxp 更会污染下一次构建。）
+      - name: 下载 Release 资产（到仓库外）
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rel"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'release-candidates.json' --pattern '*.artifact.json' \
+            --dir "$RUNNER_TEMP/rel" --clobber
+          ls -l "$RUNNER_TEMP/rel"
+          # 复核：下载资产没有污染工作树
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::下载资产后工作树变脏，provenance 闸门会失败："
+            git status --porcelain
+            exit 1
+          fi
+
+      # 用【CI 真实构建出的】资产哈希生成扁平候选文件。
+      # 这一步不能在本地做：本地构建的 sidecar 内嵌的 vcs.revision 在公开仓库里查不到，
+      # 商店会判为 provenance 硬伤（v0.2.1 因此被打回）。
+      - name: 生成 dbx-store 扁平候选文件
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          node _storecandidate.mjs --from "$RUNNER_TEMP/rel/release-candidates.json" \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" --out "$RUNNER_TEMP/store-candidate"
+
+      - name: 上传候选文件（复制进 dbx-store 的 candidates/<id>.json 提 PR）
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbx-store-candidate
+          path: ${{ runner.temp }}/store-candidate/*.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 输出候选哈希与 provenance 自证
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "=== Release $TAG 的 release-candidates.json ==="
+          cat "$RUNNER_TEMP/rel/release-candidates.json"
+          echo
+          echo "=== 各 target 的 sha256 / size ==="
+          for f in "$RUNNER_TEMP"/rel/*.artifact.json; do
+            node -e 'const a=require(process.argv[1]);console.log(`  ${a.target.padEnd(14)} ${String(a.size).padStart(9)} B  ${a.sha256}`);' "$f"
+          done
+          echo
+          # provenance 自证：把包内 sidecar 的 Go VCS 戳打出来。
+          # 审核者核对的正是这几行 —— vcs.revision 必须等于本 tag 的 commit，
+          # vcs.modified 必须是 false（工作树干净），go1.x.y 必须等于我们 pin 的工具链。
+          echo "=== sidecar 内嵌的 VCS 戳（provenance 自证）==="
+          mkdir -p "$RUNNER_TEMP/probe"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*linux-x64.dbxp' --dir "$RUNNER_TEMP/probe" --clobber
+          unzip -o -q "$RUNNER_TEMP"/probe/*linux-x64.dbxp -d "$RUNNER_TEMP/probe/pkg"
+          exe="$(find "$RUNNER_TEMP/probe/pkg/bin" -type f | head -1)"
+          go version -m "$exe" | grep -E 'vcs\.|go1' || true
+          echo
+          echo "期望：vcs.revision = $GITHUB_SHA（本 tag 的 commit），vcs.modified = false"
+          echo "把上面这段贴到 dbx-store 的 PR 里回复审核者。"

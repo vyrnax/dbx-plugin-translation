@@ -529,6 +529,24 @@ if (goId !== mani.id) {
   process.exit(1);
 }
 
+// ---- 5.5) 商店上架闸门：LICENSE 必须存在 ----
+//
+// 这两条都是 v0.2.1 首次上架被官方打回的真实原因，固化成闸门防止再犯。
+//
+// (a) LICENSE 必须存在：.dbx-store.json 声明了 Apache-2.0，但仓库里没有 LICENSE 文件，
+//     GitHub 的 license 字段就是 null。商店 validate.mjs 要求新插件必须提供 license，
+//     审核者还会核对「声明的许可与仓库实际许可一致」—— 缺文件直接判为阻断项。
+//     LICENSE 不进 .dbxp 包（打包只收 assets/ 与 ui/），所以补它不改变包字节。
+if (!fs.existsSync(path.join(root, "LICENSE"))) {
+  console.error("\n[FATAL] 仓库根目录缺少 LICENSE 文件。");
+  console.error("        .dbx-store.json 声明了 license=" + JSON.stringify(
+    (() => { try { return JSON.parse(fs.readFileSync(path.join(root, ".dbx-store.json"), "utf8")).license; } catch { return "(读不到)"; } })()
+  ) + "，");
+  console.error("        但 GitHub 检测不到许可（license=null），商店首次上架会直接拒绝。");
+  console.error("        修复：把 Apache-2.0 全文放到 LICENSE（https://www.apache.org/licenses/LICENSE-2.0.txt）。\n");
+  process.exit(1);
+}
+
 // ---- 6) 发布前提醒：别再拿占位身份发出去 ----
 if (!mani.publisher || mani.publisher === "example" || /^com\.example\./.test(mani.id)) {
   console.warn(`\n[WARN] manifest 的 id / publisher 仍是占位值（${mani.id} / ${mani.publisher}）：正式发布前请改成自己的。\n`);
@@ -552,6 +570,44 @@ for (const dir of ["assets", "ui"]) {
     }
   })(path.join(root, dir), dir);
 }
+
+// ---- 7.5) 商店上架闸门：包内文本文件必须是 LF ----
+// (b) 包内文本文件必须是 LF：.gitattributes 声明了 `* text=auto eol=lf`，
+//     但 Windows 上被编辑器改写成 CRLF 的文件，git 只在【提交时】归一化，
+//     工作区文件仍是 CRLF —— 而 _buildpkg.js 读的是工作区文件。
+//     后果：本地打的包与 CI（Linux checkout 出 LF）打的包，SVG/JS 字节不同
+//     → checksums.json 不同 → 同一 commit 产出不同 sha256。
+//     v0.2.1 就有 7 个 SVG 因此与 CI 产物对不上，审核者一眼看出「release 里的包不是 CI 构建的」。
+const crlfFiles = [];
+for (const [name, data] of files) {
+  if (name === exeRel) continue;                       // 二进制不检查
+  if (!/\.(json|js|css|html|svg|txt|md|toml)$/i.test(name)) continue;
+  if (data.includes(Buffer.from("\r\n"))) crlfFiles.push(name);
+}
+if (crlfFiles.length) {
+  console.error("\n[FATAL] 以下包内文件含 CRLF 换行符（会导致本地与 CI 打包字节不一致）：");
+  crlfFiles.forEach((f) => console.error("   - " + f));
+  console.error("\n        .gitattributes 已声明 eol=lf，但工作区文件可能被编辑器改写过。");
+  console.error("        修复：git add --renormalize . && git commit，或把文件换行符改回 LF。");
+  console.error("        为什么必须挡：同一 commit 打出不同 sha256，商店会判定");
+  console.error("        「被签名的字节与声明的源码对不上」—— 这是没有裁量空间的 provenance 硬伤。\n");
+  process.exit(1);
+}
+// (c) 资源文件名必须全小写：Windows / macOS 默认文件系统【大小写不敏感】，
+//     Linux【大小写敏感】。混用大小写（例如 assets/DeepL.svg）会导致
+//     「本地能打开、Linux 用户装完图标 404」这类只在特定平台复现的问题；
+//     而且 git 在 Windows 上改大小写需要 `git mv -f`，很容易漏提交成「重命名没生效」。
+const upperAssets = files
+  .map(([name]) => name)
+  .filter((n) => n.startsWith("assets/") && path.basename(n) !== path.basename(n).toLowerCase());
+if (upperAssets.length) {
+  console.error("\n[FATAL] 以下资源文件名含大写字母（Linux 大小写敏感，会导致跨平台 404）：");
+  upperAssets.forEach((f) => console.error("   - " + f));
+  console.error("\n        修复：git mv -f assets/Old.svg assets/old.svg（Windows 上必须带 -f）。\n");
+  process.exit(1);
+}
+
+console.log("  商店闸门通过：LICENSE 存在 / 包内 " + files.length + " 个文件全部 LF / 资源名全小写");
 
 // ---- 8) checksums.json 必须精确覆盖除自身与 signature.json 外的全部文件 ----
 const checksums = { algorithm: "sha256", files: {} };

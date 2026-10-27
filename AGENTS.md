@@ -82,32 +82,52 @@ windows/amd64  windows/arm64  linux/amd64  linux/arm64  darwin/amd64  darwin/arm
 ```
 dbx-plugin-translation/
 ├── AGENTS.md              # 本手册
-├── README.md              # 面向用户的说明 + 架构总览 + RPC 参考
-├── LICENSE
+├── PLAN.md                # 实施蓝图（功能/技术架构、详设、分阶段任务）
+├── README.md              # 面向用户的说明 + 架构总览 + RPC 参考 + 发布流程
+├── LICENSE                # Apache-2.0 全文（商店首次上架强制要求，_buildpkg.js 有闸门）
+├── RELEASE_NOTES.md       # 版本说明（CI 建 Release 时作为 body）
 ├── manifest.json          # 插件清单（运行时契约）
 ├── dbx-plugin.toml        # 打包配置（后端语言、二进制名、include）
 ├── .dbx-store.json        # 商店元数据（name/permissions 必须与 manifest 一致）
+├── .gitattributes         # 强制 LF（打包字节可重现的前提，见 6.11）
 ├── .gitignore
-├── assets/
-│   └── plugin.svg         # 插件图标（SVG 优先）
-├── ui/                    # 前端（sandbox iframe 内运行）
+├── .github/workflows/
+│   ├── ci.yml             # 单测 + -race + 前端闸门 + e2e + 多平台打包校验
+│   └── release.yml        # 【发版入口】推 tag 触发，复用官方 reusable workflow 从 tag 真机构建
+├── assets/                # 图标（plugin.svg + 各引擎 logo，文件名全小写、换行符全 LF）
+├── ui/                    # 前端（sandbox iframe 内运行，无构建步骤）
 │   ├── index.html
-│   ├── app.js             # 视图渲染与交互
-│   ├── storage.js         # 桥接层：invoke/request、诊断、看门狗
-│   └── styles.css         # 自带明暗主题
-├── backend/               # 原生侧车（Go）
-│   ├── main.go            # RPC handler、引擎适配、存储
-│   ├── engines/           # 各翻译引擎适配器（deepl/openai/baidu/youdao）
-│   ├── go.mod / go.sum
-│   └── dbxsdk/            # vendor 的官方 Go SDK
-│       ├── sdk.go         # 字节级复制，禁止修改
-│       └── VENDOR.md      # 说明为何 vendor
-├── dist/                  # 构建产物（.dbxp + artifact.json + release-candidates.json）
+│   ├── app.js             # 主翻译页、视图切换、即时翻译、流式渲染
+│   ├── engines.js         # 引擎管理：schema 驱动的动态表单
+│   ├── history.js         # 历史：分页、搜索、收藏、删除
+│   ├── storage.js         # 桥接层：invoke/onEvent、超时、诊断、看门狗、rev 管理
+│   ├── i18n.js            # zh-CN / en 双语字典（语言跟随宿主 dbxPlugin.locale）
+│   └── styles.css         # 明暗双主题 + 消费宿主 --color-*/--font-*/--radius-* token
+├── backend/               # 原生侧车（Go，纯标准库 + vendor SDK + modernc.org/sqlite）
+│   ├── main.go            # RPC 分发、流式任务表、生命周期
+│   ├── dbxsdk/            # vendor 的官方 Go SDK（sdk.go 字节级复制禁改 + VENDOR.md）
+│   ├── engine/            # Engine 接口、注册表、schema、HTTP 客户端、错误分类
+│   │   ├── openai/        # OpenAI 兼容（SSE 真流式）
+│   │   ├── localcli/      # 本地 CLI 代理（claude / codex / 自定义）
+│   │   ├── deepl/ google/ baidu/ youdao/ aliyun/ tencent/
+│   ├── secret/            # 密钥保护（DPAPI / Keychain / secret-tool / AES-GCM + HKDF）
+│   ├── store/             # SQLite 存储层（engines / secrets / history / prefs / meta）
+│   ├── lang/              # 规范语言集 + 各引擎私有码映射
+│   ├── chunk/             # 分段器（保护代码块 / URL / 占位符）
+│   ├── trace/             # 脱敏文件日志
+│   └── go.mod / go.sum
+├── dist/                  # 构建产物（gitignore，不进版本库）
+│   ├── *.dbxp             # 各平台未签名候选包
+│   ├── *.artifact.json    # 官方同名元数据（target/url/sha256/size）
+│   ├── release-candidates.json      # {plugin, artifacts} → 上传到 GitHub Release
+│   ├── store-candidate/<id>.json    # 扁平 schema → 手工提 dbx-store PR 时用
 │   └── old/               # 历史版本归档（只挪不删）
-├── _release.mjs           # 一键交叉编译 + 打包 + 校验 + 出 release-candidates.json
-├── _buildpkg.js           # 单平台打包（zip + checksums + 权限位闸门）
-├── _verify.mjs            # 单包校验（结构 / sha256 / 真跑侧车探针）
+├── _release.mjs           # 一键构建 + 打包 + 校验 + 出两份候选元数据
+├── _buildpkg.js           # 单平台打包（zip + checksums + Unix 权限位 + 全部闸门）
+├── _verify.mjs            # 单包校验（结构 / sha256 / 权限位 / 真跑侧车探针）
+├── _e2e.mjs               # 侧车协议端到端测试（含假上游端点与密钥泄露审计）
 ├── _domcheck.py           # 前端静态闸门（DOM 悬空引用 / 关键元素 / 重复函数）
+├── _storecandidate.mjs    # 生成 dbx-store 扁平 schema 候选文件（内置 validate.mjs 规则自检）
 └── _testutil.mjs          # 异步 spawn 封装（绕过沙箱 spawnSync EBUSY）
 ```
 
@@ -116,6 +136,14 @@ dbx-plugin-translation/
 - **下划线前缀 `_`**：所有构建/校验脚本。打包时会跳过 `_` 前缀和 `.` 前缀的文件，防止脚本混入发布包。
 - **插件 ID**：`com.vyrnax.translation`（小写字母、数字、`.` `_` `-`；发布后**永不更改**，改了会被视为新入口）。
 - **侧车二进制名**：`dbx-plugin-translation`，必须与 `dbx-plugin.toml` 的 `[backend].binary` 一致。
+- **资源文件名一律小写**（`assets/deepl.svg`，不是 `DeepL.svg`）。
+  为什么：Windows 与 macOS 默认文件系统**大小写不敏感**，Linux **大小写敏感**。
+  混用大小写会导致「本地能打开、CI 或 Linux 用户装完图标 404」这类只在特定平台复现的问题；
+  而且 `git mv` 改大小写在 Windows 上需要 `-f`，容易漏提交成「重命名没生效」。
+- **文本文件换行符一律 LF**（`.gitattributes` 已声明 `* text=auto eol=lf`）。
+  但注意：该属性只在**提交时**归一化，Windows 编辑器仍可能把工作区文件写成 CRLF，
+  而 `_buildpkg.js` 读的是**工作区文件** → 本地包与 CI 包字节不同。
+  因此 `_buildpkg.js` 有 CRLF 闸门（见 6.11），发现即拒绝打包。
 
 ---
 
@@ -783,6 +811,40 @@ body { font-family: var(--sans); }
 
 ---
 
+### 6.11 商店上架审核踩坑（v0.2.1 被打回的 4 个阻断项）
+
+首次提交 `t8y2/dbx-store` 上架时，审核者给出「暂不能上架」，4 个阻断项。逐条记录，**这些都不是打包 bug，`_verify.mjs` 全绿也照样被打回**——因为它们校验的是「包自身是否合法」，而商店校验的是「包能否被第三方复现与核验」。
+
+| 症状 | 根因 | 对策 |
+|---|---|---|
+| 审核者报「被签名的字节来自一个公开仓库里不存在的 commit」，`git fetch` 取不到 `53d8ebb` | sidecar 是**本地构建**的，Go 把当时的 `HEAD` 编进了二进制（`vcs.revision`），而那个 commit **从未推送到远程**。tag `v0.2.1` 的 CI 产物哈希与 release 资产**全不同** → 一眼看出 release 里的包不是 CI 构建的 | **发布产物一律由 CI 从 tag 构建**：`.github/workflows/release.yml` 复用官方 `t8y2/dbx/.github/workflows/plugin-release-reusable.yml`（pin 到具体 commit），按平台矩阵在各自 runner 上真机构建并 `gh release upload`。本地 `node _release.mjs` 的产物**只用于自测** |
+| tag 那次 CI 与 release 资产的 sidecar 分别是 `go1.21.13` 与 `go1.27.3` | CI 写 `go-version: "1.21"`（浮动，解析成当时的补丁号），本地是 1.27.3 —— 两条工具链产出不同字节 | Go 版本 **pin 到精确补丁号 `1.21.13`**，`ci.yml` 与 `release.yml` 用同一个值。浮动写法会随 runner 镜像更新漂移，导致同一 tag 重建出不同哈希，审核者无法复现 |
+| 同一个 commit，本地包与 CI 包有 **7 个 SVG** 字节不同 | `.gitattributes` 写了 `eol=lf`，但那只影响**提交时的归一化**；Windows 编辑器把工作区文件改成了 CRLF，git blob 仍是 LF。`_buildpkg.js` 读的是**工作区文件** → 本地打进 CRLF 版，CI（Linux checkout）打进 LF 版 | ① `git add --renormalize assets/` 让工作区回到 LF；② `_buildpkg.js` 增加**CRLF 闸门**：包内任何 `.json/.js/.css/.html/.svg/.txt/.md/.toml` 含 `\r\n` 直接拒绝打包 |
+| `validate.mjs` 报 `unknown field(s): plugin, artifacts` | 把 `_release.mjs` 产出的 `release-candidates.json`（`{plugin, artifacts}`，给**自动同步**用的）当成了手工 PR 的 `candidates/<id>.json`（**扁平 schema**） | 两条路径格式不同，别拿错。`_storecandidate.mjs` 专门生成扁平候选（`schemaVersion:1` + `targets[]`，url 必须是 release 资产的**绝对 HTTPS 地址**，icon 必须是绝对 URL 且扩展名 SVG/PNG），并内置 `validate.mjs` 的规则自检 |
+| 仓库 `license` 为 null，却声明了 Apache-2.0 | 只有 `.dbx-store.json` 里的字符串，**没有 LICENSE 文件** | 补 `LICENSE`（Apache-2.0 全文）；`_buildpkg.js` 增加闸门：根目录缺 `LICENSE` 直接拒绝打包。LICENSE 不进包（打包只收 `assets/`+`ui/`），所以补它不改变包字节 |
+| Release 标着 `prerelease: true`，商店同步不到 | `discover-plugin-releases.mjs` 只认 `!draft && !prerelease` 的 Release | `release.yml` 的 prepare job 建 Release 时用正式发布；已存在则 `gh release edit --draft=false --prerelease=false --latest` 转正式 |
+
+**另外几条审核要求（不阻塞签名，但必须在 PR 里写明）**：
+
+- **`host.network` 白名单不约束原生侧车**。候选只声明 `host.events`，但侧车会直连用户填的任意端点 —— 必须在 PR 模板的「network access / native sidecar behavior」里主动披露，否则审核者会认为在藏能力。
+- **翻译历史是明文 SQLite，且卸载后保留**。要在 listing 描述里点明（已写进 `manifest.description` 与 `.dbx-store.json`）。
+- **`localcli` 引擎会执行本机命令**（虽是参数数组、不经 shell），属于必须披露的原生行为。
+- **darwin 侧车只有 ad-hoc 签名**，未做 Apple notarization，要说明现状与计划。
+
+**已固化的自动闸门**（把「靠人记得」变成「机器强制」）：
+
+- `_buildpkg.js`：缺 `LICENSE` / 包内文本含 CRLF / 资源名含大写 → 拒绝打包。
+- `_storecandidate.mjs` 的 `checkProvenance()`：生成扁平候选前核对字节可复现性 ——
+  CI 核对 `GITHUB_REF==refs/tags/v<version>` 且 `GITHUB_SHA==HEAD` 且工作树干净；
+  本地核对工作树干净 + tag 指向 HEAD + HEAD 已推送远程。不满足即 `[FATAL]`。
+  本地 `_release.mjs` 自动带 `--allow-unverified` 跳过（产物不可提交商店）。
+  **这道闸门直接对应阻断项 1**：本地构建的 sidecar 内嵌未推送的 `vcs.revision`，
+  审核者去公开仓库查不到 → 判定「字节来自不存在的 commit」。
+
+**可复用的经验**：`README.md` 第 7.3 节固化了本插件对这几个审核问题的标准答复口径，下次发版直接照抄，不必重新组织语言。
+
+---
+
 ## 7. 编码规范
 
 ### 7.1 通用（强制）
@@ -1008,15 +1070,28 @@ ui_build = ["node", "_domcheck.py"]   # 本项目无构建步骤，可留空或�
 
 ### 9.2 四步流程
 
-**第一步：发布源码和候选 Release**
+**第一步：推 tag，由 CI 构建并发布候选 Release**
 
-在本仓库创建版本 Tag 和 GitHub Release，包含：
+```bash
+git push origin main
+git tag v<version> && git push origin v<version>
+```
+
+`.github/workflows/release.yml` 会自动创建 Release 并上传：
 - 每个平台的未签名 `.dbxp` 候选包
 - 每个候选包对应的 `.artifact.json`
-- 汇总后的 `release-candidates.json`
-- Release Notes 和对应源码 Tag
+- 汇总后的 `release-candidates.json`（`{plugin, artifacts}` 格式，供商店自动同步）
+- `dbx-store-candidate` artifact（扁平 schema 候选文件，供手工提 PR）
+- Release Notes（取自 `RELEASE_NOTES.md`）
 
-候选包可放本仓库 GitHub Releases、CDN 或对象存储，但**不要把 `.dbxp` 提交进 Git 历史**。
+**🚫 绝不本地构建后手工上传候选包。** Go 会把构建时的 git 戳编进二进制
+（`go version -m` 可见 `vcs.revision` / `vcs.modified`）。本地构建时 HEAD 往往还没推到远程，
+于是 sidecar 内嵌的 revision 在公开仓库里查不到，商店会判定「被签名的字节来自一个不存在的
+commit」——**这是没有裁量空间的 provenance 硬伤**，v0.2.1 正是因此被打回（详见 6.11）。
+
+本地 `node _release.mjs` 的产物只用于开发自测。
+
+候选包放本仓库 GitHub Releases、CDN 或对象存储均可，但**不要把 `.dbxp` 提交进 Git 历史**。
 
 **第二步：让 dbx-store 自动创建候选 PR**
 
@@ -1027,6 +1102,22 @@ candidates/<plugin-id>.json
 ```
 
 已启用自动更新的作者**不需要每个版本手工创建 Issue 或 PR**，也不需要在插件仓库配置商店签名 Secret。首次上架或修改商店展示字段时，才按 `dbx-store` 贡献指南提供发布者和候选信息。
+
+**⚠️ 两份候选元数据格式不同，别拿错**（v0.2.1 因此被 `validate.mjs` 拒绝）：
+
+| 文件 | 格式 | 用途 |
+|---|---|---|
+| `dist/release-candidates.json` | `{plugin, artifacts}` | 上传到 Release，供**自动同步**路径消费 |
+| `dist/store-candidate/<id>.json` | 扁平 schema（`schemaVersion`/`targets[]`） | **手工提 PR** 时复制成 `candidates/<id>.json` |
+
+把前者当成手工 PR 的候选文件提交，`validate.mjs` 直接报 `unknown field(s): plugin, artifacts`。
+扁平候选由 `_storecandidate.mjs` 生成，它内置了 `validate.mjs` 的规则自检
+（键白名单 / semver / HTTPS / icon 扩展名 / sha256 格式 / target 唯一性），
+本地就能挡住格式错误，不必等 PR 的 CI 往返。
+
+手工提 PR 时，`candidates/<id>.json` 的 `targets[].url` 必须是 release 资产的**绝对 HTTPS 地址**，
+`icon` 也必须是绝对 URL 且扩展名为 SVG/PNG；`source` 应指向**构建这批字节的确切 tag**
+（`https://github.com/<owner>/<repo>/tree/v<version>`），审核者据此核对 provenance。
 
 **第三步：DBX Store 审核并签名**
 

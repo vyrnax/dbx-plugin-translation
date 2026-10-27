@@ -519,6 +519,24 @@ const checks = [
     const ids = new Set((mani.contributions || []).map((c) => c.id));
     return Object.keys(l.contributions).every((k) => ids.has(k));
   })()],
+  // ---- 商店上架闸门（与 _buildpkg.js 的判据必须一致，见 AGENTS.md 6.11）----
+  // 这些项在 v0.2.1 首次上架时全部「包自身合法、_verify 全绿」却仍被官方打回，
+  // 因为商店校验的是「能否被第三方复现与核验」，不是「包结构对不对」。
+  ["仓库含 LICENSE 文件（.dbx-store.json 声明了 license）",
+    fs.existsSync(path.join(ROOT, "LICENSE")),
+    (() => { try { return "声明 license=" + JSON.parse(fs.readFileSync(path.join(ROOT, ".dbx-store.json"), "utf8")).license; } catch { return "(读不到 .dbx-store.json)"; } })()],
+  ["包内文本文件全部 LF（CRLF 会让本地与 CI 打包字节不一致）",
+    es.filter((e) => /\.(json|js|css|html|svg|txt|md|toml)$/i.test(e.name))
+      .every((e) => !read(e).includes(Buffer.from("\r\n"))),
+    es.filter((e) => /\.(json|js|css|html|svg|txt|md|toml)$/i.test(e.name) && read(e).includes(Buffer.from("\r\n")))
+      .map((e) => e.name).join(",") || "无 CRLF"],
+  ["包内资源文件名全部小写（Linux 大小写敏感，混用会 404）",
+    es.filter((e) => e.name.startsWith("assets/"))
+      .every((e) => path.basename(e.name) === path.basename(e.name).toLowerCase()),
+    es.filter((e) => e.name.startsWith("assets/") && path.basename(e.name) !== path.basename(e.name).toLowerCase())
+      .map((e) => e.name).join(",") || "全部小写"],
+  ["包未签名（候选包不得含 signature.json，签名由商店完成）", !has("signature.json")],
+
   [".dbx-store.json 的 permissions / name 与 manifest 一致", (() => {
     try {
       const pub = JSON.parse(fs.readFileSync(path.join(ROOT, ".dbx-store.json"), "utf8"));
