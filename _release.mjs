@@ -237,15 +237,23 @@ console.log(JSON.stringify(payload, null, 2));
 // 【重要】本地产物只用于开发自测。要提交给商店的候选文件，必须用【CI 从 tag 构建】
 // 的那批资产哈希来生成 —— 本地构建的 sidecar 内嵌的 vcs.revision 在公开仓库里查不到，
 // 商店会判为 provenance 硬伤（v0.2.1 因此被打回）。
-// provenance 闸门的开关：
-//   CI 里【不加】--allow-unverified —— 闸门强制生效。CI 由 tag 触发，
-//     GITHUB_REF/GITHUB_SHA 是平台注入的可信值，能真正证明字节来源，
-//     生成的这份文件才是【可以提交给商店】的。
-//   本地【加】--allow-unverified —— 本地跑 _release.mjs 是为了自测打包链路，
-//     此时工作树通常是脏的、tag 也还没打，闸门必然不过；硬卡住会打断开发节奏。
-//     脚本内部会打醒目警告，说明这份文件的 sha256 不可提交商店。
+// provenance 闸门的开关：只有【tag 触发的发布】才强制，其余一律放行（带警告）。
+//
+// 三种调用场景，判据不同：
+//   1) release.yml（tag 触发，GITHUB_REF=refs/tags/vX.Y.Z）：这是真正的发布，
+//      GITHUB_REF/GITHUB_SHA 是平台注入的可信值，能证明字节来源 → 【强制】闸门，
+//      生成的文件才是可提交商店的。
+//   2) ci.yml 的 package job（push/PR 触发，GITHUB_REF=refs/heads/main 或 refs/pull/…）：
+//      这只是【冒烟测试打包链路能否跑通】，不是发布，工作树也未必对应任何 tag。
+//      若在这里强制闸门，普通 CI 会被自己卡死（v0.2.2 第一次 push 就踩了：
+//      package job 因 GITHUB_REF 不是 tag 而 FATAL）→ 必须放行。
+//   3) 本地开发：工作树通常脏、tag 未打 → 放行，脚本内部打醒目警告。
+//
+// 判据：CI 且 GITHUB_REF 以 refs/tags/ 开头 = 场景 1，强制；其余 = 场景 2/3，放行。
+const isTagRef = String(process.env.GITHUB_REF || "").startsWith("refs/tags/");
+const enforceProvenance = IN_CI && isTagRef;
 console.log("");
-const provArgs = IN_CI ? [] : ["--allow-unverified"];
+const provArgs = enforceProvenance ? [] : ["--allow-unverified"];
 await run(process.execPath, [path.join(ROOT, "_storecandidate.mjs"), "--tag", "v" + ver, ...provArgs]);
 
 const totalMB = artifacts.reduce((s, a) => s + a.size, 0) / 1024 / 1024;
