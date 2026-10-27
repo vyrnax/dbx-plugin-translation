@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Request 是一次翻译请求。
@@ -66,6 +67,50 @@ type Result struct {
 	Chunks       int    // 分段数（未分段时为 1）
 	Engine       string // 引擎显示名（用于历史记录的展示）
 	Model        string // 模型标识（openai 的 model / deepl 的版本等）
+}
+
+// ElapsedMs 返回自 start 起经过的毫秒数，【向上取整】，且保证非负。
+//
+// # 为什么要向上取整
+//
+// time.Duration.Milliseconds() 是【向下截断】：0.4ms 会变成 0ms。
+// 界面上显示「耗时 0ms」看着像计时功能坏了，而实际上确实花了时间、只是不足 1ms。
+// 向上取整保证「可测量的非零耗时」至少报 1ms，语义更诚实。
+//
+// # 为什么保证非负
+//
+// 时钟回拨（系统时间被向前调整过）时 time.Since 会得到负的 Duration。
+// 不处理的话界面会显示「-3ms」这种荒谬值，所以钳到 0。
+//
+// # ⚠️ 它【不能】保证返回正数，也不该有人这么假设
+//
+// 0 是合法返回值，因为 time.Since(start) 本身可能就是 0：
+// 实测 Windows 本机连续两次 time.Now() 有 100% 概率返回完全相同的值
+// （200 次采样全为 0），200 次进程内 httptest 往返里 177 次 time.Since == 0。
+// Linux CI 上则是时钟细但机器快，一次往返常在 0.x ms 内完成。
+// 0 向上取整还是 0 —— 这是时钟粒度问题，不是取整方式能解决的。
+//
+// 本项目 v0.2.2 的 CI 曾因此随机红绿：openai_test.go 断言 `ElapsedMs <= 0` 报错，
+// 等于假设「一次翻译至少花 1ms」，而该假设在快机器上不成立。
+// **真正的修法是改掉那条断言（只断言非负），而不是把实现硬掰成正数** ——
+// 断言必须来自规范，不能来自「实现现在输出什么」（见 AGENTS.md 6.8）。
+//
+// # 为什么放在 engine 包而不是各处自己算
+//
+// 8 个引擎适配器 + main.go 的 RPC 层共 14 处都要算耗时。
+// 各自写 time.Since(start).Milliseconds() 就会各自带着同一套截断/负数缺陷，
+// 改的时候要动 14 个地方、漏一个就留一个坑。收敛成一个函数，
+// 缺陷只可能存在一处、修一次就全修好。
+//
+// 参数 start 是调用方在发起请求前记录的 time.Now()；返回毫秒数（>= 0）。
+
+func ElapsedMs(start time.Time) int64 {
+	d := time.Since(start)
+	if d <= 0 {
+		return 0
+	}
+	const ms = int64(time.Millisecond)
+	return (d.Nanoseconds() + ms - 1) / ms
 }
 
 // Engine 是所有翻译引擎适配器的统一接口。

@@ -212,7 +212,7 @@ func (e *engineImpl) Translate(ctx context.Context, r engine.Request) (engine.Re
 	return engine.Result{
 		Target:       target,
 		DetectedLang: fromCanonical(parsed.From),
-		ElapsedMs:    time.Since(start).Milliseconds(),
+		ElapsedMs:    engine.ElapsedMs(start),
 		Chunks:       1,
 		Engine:       engine.DisplayName(e.name, "百度翻译"),
 		Model:        "baidu-translate",

@@ -1155,7 +1155,7 @@ func (p *plugin) handleEnginesTest(values map[string]any) (any, *RPCError) {
 			"detail":    ee.Detail,
 			"kind":      ee.KindName(),
 			"code":      ee.Code(),
-			"elapsedMs": time.Since(start).Milliseconds(),
+			"elapsedMs": engine.ElapsedMs(start),
 		}, nil
 	}
 
@@ -1183,11 +1183,11 @@ func (p *plugin) handleEnginesTest(values map[string]any) (any, *RPCError) {
 			"detail":    ee.Detail,
 			"kind":      ee.KindName(),
 			"code":      ee.Code(),
-			"elapsedMs": time.Since(start).Milliseconds(),
+			"elapsedMs": engine.ElapsedMs(start),
 		}, nil
 	}
 
-	elapsed := time.Since(start).Milliseconds()
+	elapsed := engine.ElapsedMs(start)
 	trace.Log("engines/test ok kind=%s elapsed=%dms", e.Kind(), elapsed)
 	return map[string]any{
 		"ok":        true,
@@ -1432,7 +1432,7 @@ func (p *plugin) runChunked(
 		Target:       target,
 		DetectedLang: detectedLang,
 		Model:        model,
-		ElapsedMs:    time.Since(start).Milliseconds(),
+		ElapsedMs:    engine.ElapsedMs(start),
 		Chunks:       chunks,
 		Engine:       name,
 	}, nil

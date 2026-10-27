@@ -189,7 +189,7 @@ func (e *engineImpl) Translate(ctx context.Context, r engine.Request) (engine.Re
 	return engine.Result{
 		Target:       target,
 		DetectedLang: toCanonical(parsed.Response.Source),
-		ElapsedMs:    time.Since(start).Milliseconds(),
+		ElapsedMs:    engine.ElapsedMs(start),
 		Chunks:       1,
 		Engine:       engine.DisplayName(e.name, "腾讯云翻译"),
 		Model:        "tencent-tmt",

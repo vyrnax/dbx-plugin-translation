@@ -456,7 +456,7 @@ func (e *engineImpl) Translate(ctx context.Context, r engine.Request) (engine.Re
 
 	return engine.Result{
 		Target:    target,
-		ElapsedMs: time.Since(start).Milliseconds(),
+		ElapsedMs: engine.ElapsedMs(start),
 		Chunks:    1,
 		Engine:    e.displayName(),
 		Model:     e.cfg.Model,
@@ -598,7 +598,7 @@ func (e *engineImpl) Stream(ctx context.Context, r engine.Request, emit func(eng
 
 	return engine.Result{
 		Target:    cleanTranslation(builder.String()),
-		ElapsedMs: time.Since(start).Milliseconds(),
+		ElapsedMs: engine.ElapsedMs(start),
 		Chunks:    index,
 		Engine:    e.displayName(),
 		Model:     e.cfg.Model,

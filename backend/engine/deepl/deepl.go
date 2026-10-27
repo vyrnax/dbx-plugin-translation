@@ -240,7 +240,7 @@ func (e *engineImpl) Translate(ctx context.Context, r engine.Request) (engine.Re
 	return engine.Result{
 		Target:       target,
 		DetectedLang: detected,
-		ElapsedMs:    time.Since(start).Milliseconds(),
+		ElapsedMs:    engine.ElapsedMs(start),
 		Chunks:       1,
 		Engine:       engine.DisplayName(e.name, "DeepL"),
 		Model:        "deepl",

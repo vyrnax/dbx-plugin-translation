@@ -206,7 +206,7 @@ func (e *engineImpl) Translate(ctx context.Context, r engine.Request) (engine.Re
 	return engine.Result{
 		Target:       target,
 		DetectedLang: parseLangDirection(parsed.L),
-		ElapsedMs:    time.Since(start).Milliseconds(),
+		ElapsedMs:    engine.ElapsedMs(start),
 		Chunks:       1,
 		Engine:       engine.DisplayName(e.name, "有道翻译"),
 		Model:        "youdao-v3",

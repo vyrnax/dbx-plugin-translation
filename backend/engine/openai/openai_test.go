@@ -155,8 +155,20 @@ func TestTranslate_Success(t *testing.T) {
 	if res.Model != "test-model" {
 		t.Errorf("Model = %q", res.Model)
 	}
-	if res.ElapsedMs <= 0 {
-		t.Errorf("ElapsedMs = %d, 应为正数", res.ElapsedMs)
+	// 耗时只断言【非负】，绝不断言「必须为正」。
+	//
+	// 原先这里写的是 `ElapsedMs <= 0` 报错，即假设「一次翻译至少花 1ms」。
+	// 这个假设在快机器上不成立，导致 CI 随机失败（同一份代码前一次 run 还是绿的）：
+	//   - Linux CI：时钟细但机器快，对进程内 httptest 端点的一次往返常在 0.x ms 内完成；
+	//   - Windows 本机：Go 的时钟粒度更粗，实测连续两次 time.Now() 有 100% 概率返回
+	//     完全相同的值，200 次进程内 HTTP 往返里 177 次 time.Since(start) 直接等于 0。
+	// 也就是说「耗时 0ms」是【合法状态】，不是缺陷。
+	//
+	// 教训（对齐 AGENTS.md 6.8）：断言的值必须来自规范，不能来自「实现现在输出什么」。
+	// 把机器速度当成规范的一部分，测试就必然 flaky。
+	// 真正需要保证的是「不返回负数」（时钟回拨时不得显示 -3ms），见 engine.ElapsedMs。
+	if res.ElapsedMs < 0 {
+		t.Errorf("ElapsedMs = %d, 不得为负数", res.ElapsedMs)
 	}
 }
 
