@@ -163,6 +163,42 @@ jobs:
       rust-toolchain: ""
     secrets: inherit
 
+  upload-metadata:
+    name: 上传 .artifact.json 到 Release
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      # 官方 reusable workflow 的 publish job 只上传 *.dbxp 与 release-candidates.json，
+      # 【不上传】各 target 的 .artifact.json。但商店审核与 AGENTS.md 9.2 都要求
+      # Release 里有「每个候选包对应的 .artifact.json」，所以这里补传。
+      #
+      # 数据来源是 build job 的 run artifact（dbx-plugin-<target>）：
+      # 里面的 .artifact.json 由 _buildpkg.js 在打包时产出，且已被 publish job
+      # 逐字节校验过 sha256/size 与 .dbxp 一致 —— 不是重新算的，可信。
+      - name: 下载各 target 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dbx-plugin-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: 上传 .artifact.json 到 Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' metas < <(find release-assets -type f -name '*.artifact.json' -print0)
+          if [ "${#metas[@]}" -eq 0 ]; then
+            echo "::error::没有 .artifact.json 可上传"
+            exit 1
+          fi
+          gh release upload "$TAG" "${metas[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "已上传 ${#metas[@]} 个 .artifact.json"
+
   summary:
     name: 生成商店候选文件并输出哈希（回帖给审核者用）
     needs: [prepare, build]
@@ -183,25 +219,30 @@ jobs:
         with:
           go-version: "1.21.13"
 
-      # 【所有下载与产物都写到 $RUNNER_TEMP，绝不写进仓库工作树】
+      # .artifact.json 从【build job 的 run artifact】取，而不是从 Release 取。
       #
-      # 为什么这条很关键：_storecandidate.mjs 的 provenance 闸门会跑 `git status --porcelain`
-      # 判断工作树是否干净。如果把 Release 资产下载到仓库内的 assets/ 或 probe/，
-      # 工作树立刻变脏 → 闸门判定「字节不可复现」→ 这个 job 自己把自己卡死。
-      # （assets/ 还是打包输入目录，往里塞 .dbxp 更会污染下一次构建。）
-      - name: 下载 Release 资产（到仓库外）
+      # 为什么改这里：原先 summary 去 Release 下载 *.artifact.json，但官方 reusable
+      # workflow 的 publish job 根本不上传它们 → 通配符匹配不到 → bash 把字面量
+      # "*.artifact.json" 原样传给 node → MODULE_NOT_FOUND，summary 因此红了一次。
+      # run artifact 是 build job 必然产出的，不依赖 Release 里有没有，更稳。
+      - name: 下载各 target 构建产物（含 .artifact.json）
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dbx-plugin-*
+          path: ${{ runner.temp }}/rel
+          merge-multiple: true
+
+      # release-candidates.json 由 publish job 上传到 Release，这里取它作为 --from 输入
+      - name: 下载 release-candidates.json（到仓库外）
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/rel"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'release-candidates.json' --pattern '*.artifact.json' \
-            --dir "$RUNNER_TEMP/rel" --clobber
-          ls -l "$RUNNER_TEMP/rel"
-          # 复核：下载资产没有污染工作树
+            --pattern 'release-candidates.json' --dir "$RUNNER_TEMP/rel" --clobber
+          # 复核：下载资产没有污染工作树（provenance 闸门会跑 git status）
           if [ -n "$(git status --porcelain)" ]; then
             echo "::error::下载资产后工作树变脏，provenance 闸门会失败："
             git status --porcelain
@@ -239,7 +280,16 @@ jobs:
           cat "$RUNNER_TEMP/rel/release-candidates.json"
           echo
           echo "=== 各 target 的 sha256 / size ==="
-          for f in "$RUNNER_TEMP"/rel/*.artifact.json; do
+          # 用【递归 find】而不是扁平通配符，两个原因：
+          #   1) run artifact 解包后可能带 dist/ 一层目录（官方 publish job 也是递归 find）；
+          #   2) 通配符匹配不到时 bash 会把字面量 "*.artifact.json" 原样传给 node，
+          #      正是上次 MODULE_NOT_FOUND 的直接原因。find 匹配不到只会得到空数组。
+          mapfile -d '' metas < <(find "$RUNNER_TEMP/rel" -type f -name '*.artifact.json' -print0)
+          if [ "${#metas[@]}" -eq 0 ]; then
+            echo "::error::run artifact 里没有任何 .artifact.json"
+            exit 1
+          fi
+          for f in "${metas[@]}"; do
             node -e 'const a=require(process.argv[1]);console.log(`  ${a.target.padEnd(14)} ${String(a.size).padStart(9)} B  ${a.sha256}`);' "$f"
           done
           echo
