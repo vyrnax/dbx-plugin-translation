@@ -5,7 +5,9 @@ import "github.com/vyrnax/translation/engine"
 // schema 返回阿里云翻译的配置表单描述。
 func schema() engine.Schema {
 	return engine.Schema{
+
 		Kind:          Kind,
+		Icon:          "aliyun.svg",
 		Label:         "阿里云翻译",
 		LabelEn:       "Alibaba Cloud Translate",
 		DefaultName:   "阿里云翻译",

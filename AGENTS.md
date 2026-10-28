@@ -31,6 +31,25 @@
 
 **替代方案**：用 `host.clipboard:read` 读剪贴板 + `floating` 浮动窗口，实现「复制即翻译」的桌面卡片。
 
+### 1.2 官方已确认、但本轮未做的能力：浮动窗口（「复制即译」桌面卡片）
+
+已核对官方文档 <https://dbxio.com/cn/docs/plugin-development#%E6%B5%AE%E5%8A%A8%E7%AA%97%E5%8F%A3>（2026-10-28）。
+**这不是「宿主不支持」，而是「本轮没做」**——下表是照做即可的硬事实，后续版本实现时不要再猜：
+
+| 要点 | 官方口径 | 对本项目的影响 |
+|---|---|---|
+| 能力探测 | 使用前先判断 `window.dbxPlugin.capabilities.floating`：Web 宿主没有窗口，桌面宿主也可能不支持窗口管理 | 必须**运行期探测**；探测不到就把入口隐藏，不要报错也不要退化成一个假窗口 |
+| 打开窗口 | `floating.open({ contributionId, title, width, height, x, y, alwaysOnTop, skipTaskbar, resizable, context })` → `{ windowId, reused }`，**需要 `host.workbench`** | 当前 manifest 只有 `host.events` → 要做这个功能必须新增 `host.workbench`，并同步 `.dbx-store.json`（铁律 13） |
+| `contributionId` | 指向**本插件的某个 workbench contribution**；一个（插件, contribution）只有一个窗口，重复 `open` 只是把已有窗口带到前台 | 要新增一个独立的工作台贡献点（如 `…floating`）。复用主工作台 id 会弹出整个工作台，而不是小卡片 |
+| 窗口内身份 | `context.surface === "window"`，`context.workbenchId` 是窗口 id | UI 必须按 `surface` 分支渲染成胶囊卡片；`surface` 未知取值要退化成 `"tab"` 的行为 |
+| 拖动 | `beginDrag()` / `endDrag({ snap })` / `setSize(w, h)` **只在浮动窗口内有效**，在标签页调用会被拒绝。插件只决定「何时开始拖」与哪个元素是把手；窗口移动、边缘吸附、位置记忆都归宿主，**没有逐帧桥调用** | 别自己实现拖动与位置持久化；`pointerup` 丢了也不会把窗口粘在光标上（宿主在光标静止后自行收尾） |
+| 状态共享 | 浮动窗口是 UI 的**另一份实例**，桥、权限、上下文契约、sidecar RPC 都与标签页相同；共享状态必须走 sidecar 或 `host.storage`，不能指望模块内存 | 直接复用现有侧车 RPC；两个实例都写 prefs 时要走 rev 乐观锁，否则会互相覆盖 |
+| 导航转发 | 在该表面发起的 `openWorkbench` / `openFilesystem` 会在 DBX 主窗口打开并前置；**`executeCommand` 在这个表面完全不提供**（调用会成功返回但什么都看不见） | 卡片上的「打开完整工作台」照常可用；不要在这个表面用 executeCommand 做按钮 |
+| 窗口外观 | 宿主不画任何外壳，没有标签栏/dock；**刻意不支持逐像素透明**（各平台对透明区域的鼠标事件不一致）。位置跨重启保留，记录的位置不在任何已连接显示器上时丢弃 | 自己给背景 + 圆角，否则就是一块直角矩形；不要设计镂空造型 |
+| 关闭 | `closeWorkbench()` 与 `floating.close()` 都能关，与 Ctrl/Cmd+W 同一条路径 | 卡片自己提供关闭按钮 |
+| 读剪贴板 | 读系统剪贴板需要 `host.clipboard:read`（**写**剪贴板不需要权限） | 「复制即译」需再加这一项；两者都是老权限，不会把最低宿主版本抬过 `>=0.6.21` |
+| 开发宿主 | 开发宿主不模拟窗口管理，`floating` 系列方法不可用 | **只能在桌面端验收**，与「跟随宿主」类功能同属开发宿主盲区（见 6.10） |
+
 ---
 
 ## 2. 技术栈
@@ -693,6 +712,17 @@ var RPC_TIMEOUT = 30000, READY_TIMEOUT = 8000, CTX_TIMEOUT = 2500,
 | GitHub Actions 上 `[FATAL] 找不到 target=darwin-arm64 的侧车二进制：/home/runner/.../_xbuild\dbx-plugin-translation-darwin-arm64` | `_buildpkg.js` 用 `root + \`_xbuild\\${binary}...\`` 硬编码反斜杠。Windows 上正常，Linux runner 上反斜杠不是分隔符，拼成「文件名里带反斜杠」的怪路径，`fs.existsSync` 必然 false | 全部改用 `path.join`。**症状极具误导性**：日志显示 5 个平台 `[build]` 全部成功，下一步却说找不到文件，看起来像 Go 交叉编译的问题，实际只是路径分隔符 |
 | 改完 `path.join` 后本地打包报 `ENOENT: ...dbx-plugin-translationmanifest.json` | 只改了 `resolveExe` 里的 3 处，却把 `const root = __dirname + path.sep` 的尾部分隔符去掉了，而文件里还有 7 处 `root + "manifest.json"` 依赖它 | 改路径拼接方式时必须**全文件扫描**所有同类拼接点，不能只改报错的那一处。已加 `_verify.mjs` 闸门扫描全部构建脚本 |
 | 新加的路径闸门一上来就 FAIL，报 `_buildpkg.js` 与 `_verify.mjs` 都有硬编码路径 | 闸门扫的是**原文**，而它自己的注释里正写着这个 bug 的示例代码（`root + \`_xbuild\\...\``） | 扫描前用 `stripComments` 剥离注释。这与「storage.js 注释解释为什么不用 localStorage 却被判违规」是同一类教训 —— **凡是 grep 源码的闸门，都必须先剥离注释** |
+| 状态栏改了N轮仍随内容上下漂移 | `#app` 用 grid，但**在流子元素有 5 个**（topbar + 两条 banner + main + statusbar），`grid-template-rows` 只声明了 4 条轨道 → statusbar 落进隐式 `auto` 行，「固定状态栏轨道」根本没作用到它 | 多区纵向布局优先 **flex 列**：固定项 `flex: 0 0 auto`，伸缩项 `flex: 1 1 auto; min-height: 0`。`min-height: 0` 不能省——flex/grid 子项默认 `min-height: auto`，内容超高时不收缩而是把容器撑爆。用 grid 就必须数清「在流子元素 = 轨道数」，且注意 `[hidden]` 的元素显示出来时会多占一条 |
+| 「明明改了 CSS，界面一点变化没有」，而脚本没报错 | 批量替换的匹配串写成**单行**，文件里实际是**多行块** → 匹配 0 次、替换 0 次、也不报错 | 任何替换型修改都要先断言 `count(old) == 1` 再替换，不满足就退出非零。「改了没生效」的第一嫌疑人永远是**替换根本没发生** |
+| 图标放 `assets/` 里前端怎么都读不到 | 宿主 `ui.readAsset` **只允许 UI root 以内**的路径，越界直接抛 `Asset is outside UI root` | UI 要消费的资源放 `ui/icons/`；`assets/` 只留给 manifest 里 `icon` 字段那种由宿主加载的图 |
+| `<img>` 用 `readAssetUrl` 拿到的地址加载失败 | 沙箱 CSP 的 `img-src` 只放行 `data:` 与 `blob:`，`readAssetUrl` 可能返回 `http(s)` 形式，被 CSP 拦掉且**不报网络错误** | 优先 `readAsset` → 自己拼 `data:` URI；`readAssetUrl` 只作兜底；两者都失败退回首字母色块，绝不出现破图 |
+| 同一个 18px 方槽里，圆形 logo 比方 logo 明显大一圈 | 各引擎 SVG 的**画布**尺寸（24/32/1024）与**内容包围盒占画布比例**都不同，`object-fit: contain` 只按画布等比缩放 | 做**光学归一**：实测每个图标的内容包围盒，用 `<g transform>` 统一成「最长边占画布 88% + 居中」。手写 SVG path 解析器算包围盒两次都算错（贝塞尔极值不是端点），要用真实渲染引擎（无头浏览器 `getBBox()`）测 |
+| 深色主题下 `localcli` 图标几乎看不见 | 图标本身是黑色，深色背景没有对比度；`prefers-color-scheme` 对内联 SVG 不生效 | 图标配色必须明暗两种主题各看一遍。不能用宿主主题色（会和内容色撞）就用中性彩色；内联 SVG 想跟随主题要写 `fill="var(--brand-fg, currentColor)"` |
+| 翻译页引擎下拉里放不出图标 | 原生 `<select>` 的 `<option>` 由**操作系统绘制**，浏览器不支持在里面放图片/HTML | 需要图标就得**自绘下拉**（`button` + `role="listbox"` 的 `ul`），同时补 `aria-haspopup` / `aria-expanded` / `aria-selected`，别让读屏器失去语义 |
+| 引擎列表的拖拽把手「看得见但拖不动」，也没有任何报错 | 原生 HTML5 DnD（`draggable` + `dragstart`）在宿主的 **sandbox iframe** 里不触发 | 改用**指针事件**自己实现：`pointerdown/move/up` + 按 `clientY` 命中卡片实时插入 DOM，松手时读 DOM 顺序提交。凡是「沙箱里点了没反应」的功能，先怀疑浏览器原生能力在 opaque origin iframe 中被削掉 |
+| 改了「默认引擎置顶」的排序契约，`TestReorderEngines` 立刻 FAIL | **不是实现错，是旧断言钉住了旧契约**（原断言要求 reorder 后 `e2` 第一） | 契约变更要同步改断言，并且**补一步能区分新旧契约的验证**（这里加「换默认引擎再查一次顺序」）：只测一组的话全 0 的 `ord` 也能凑出同样顺序，测试失去区分力 |
+| 本机 `go test -race` 起不来：`-race requires cgo` | Windows 的 race detector 依赖 cgo，而本项目**必须无 cgo** 才能交叉编译 6 平台 | 本机不跑 `-race`，交给 CI 的 ubuntu job；**不要**为了跑竞态检测在本机开 cgo——那会掩盖真实的构建约束 |
+
 
 **从这些坑里提炼的两条通用规则**（已并入铁律）：
 
@@ -714,6 +744,10 @@ var RPC_TIMEOUT = 30000, READY_TIMEOUT = 8000, CTX_TIMEOUT = 2500,
 - **静默失效的功能要有主动兜底**。「语言/主题不跟随」不会报错、不会白屏，用户根本不会去报 bug，只会默默卸载。对这类功能，一层廉价的轮询（1.5 秒比较一次指纹）远比「相信事件一定会来」可靠。
 
 - **别把「机器速度」当成规范来断言，否则测试必然 flaky**：`openai_test.go` 曾断言 `ElapsedMs <= 0` 即报错，等于假设「一次翻译至少花 1ms」。该假设在快机器上不成立 —— Linux CI 上对进程内 `httptest` 端点的一次往返常在 0.x ms 内完成；Windows 本机更极端，实测连续两次 `time.Now()` 有 **100%** 概率返回完全相同的值（200 次采样全为 0），200 次进程内 HTTP 往返里 **177 次** `time.Since(start)` 直接等于 0。于是同一份代码在 CI 上随机红绿（前一次 run 还是绿的）。**正确修法是改掉断言（只断言非负），而不是把实现硬掰成正数** —— 0ms 是合法状态。顺带把 14 处重复的 `time.Since(start).Milliseconds()`（向下截断，0.4ms 显示成 0ms）收敛成 `engine.ElapsedMs()`（向上取整 + 钳非负），缺陷只可能存在一处。教训同 DeepL 那条：**断言的值必须来自规范，不能来自「实现现在输出什么」**。
+
+- **「已上架的版本号绝不能复用」**：商店核对过 0.2.2 那批字节的哈希之后，任何改动（哪怕只是换图标、调状态栏）都必须升到 0.2.3 再打包。同号不同字节会让「用户装的到底是哪份」说不清，商店也会判 provenance 不符；Release 资产也不可覆盖，只能新版本重发。
+- **改布局的验证单位是「在流子元素 ↔ 轨道/伸缩声明」的对应关系**，不是「我加了 CSS」：轨道数少于子元素数时，多出来的元素落进隐式轨道，看起来声明了固定尺寸却完全不起作用。
+- **「替换型脚本修改」必须断言替换发生了几次**：匹配不上的替换是静默成功，代价是一整轮人工复验白跑。
 
 ### 6.9 网络与代理（国内环境）
 

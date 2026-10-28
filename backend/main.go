@@ -89,7 +89,7 @@ import (
 // 运行时反读保证了「包里的 manifest 说什么版本，侧车就自报什么版本」。
 const (
 	pluginID      = "com.vyrnax.translation"
-	pluginVersion = "0.2.2"
+	pluginVersion = "0.2.3"
 )
 
 // 全局在飞翻译任务上限。
@@ -543,6 +543,11 @@ func (p *plugin) handleSchema() (any, *RPCError) {
 			"kind":    s.Kind,
 			"label":   s.Label,
 			"labelEn": s.LabelEn,
+			// icon 是图标文件名（相对前端 ui/icons/ 目录），由各引擎在自己的 schema 里声明。
+			// 为什么这里要显式列出：handleSchema 是手工挑字段组装 map 的（不是直接序列化
+			// engine.Schema 结构体），漏一行前端就拿不到该字段 —— 新增 Schema 字段时必须
+			// 同步这里。前端拿到空值会退化为「首字母色块」，不会报错。
+			"icon": s.Icon,
 			// defaultName / defaultNameEn 供前端「选类型自动补全名称」使用。
 			// 同一类型可以添加多个实例（例如两个不同的 OpenAI 兼容端点），
 			// 用户必须靠名称区分，所以默认名要能一眼看出是哪家服务。

@@ -597,17 +597,20 @@ if (crlfFiles.length) {
 //     Linux【大小写敏感】。混用大小写（例如 assets/DeepL.svg）会导致
 //     「本地能打开、Linux 用户装完图标 404」这类只在特定平台复现的问题；
 //     而且 git 在 Windows 上改大小写需要 `git mv -f`，很容易漏提交成「重命名没生效」。
+// 覆盖 assets/ 与 ui/：引擎图标现在放在 ui/icons/ 下，由 schema.icon 引用，
+// 同样受 Linux 大小写敏感影响，必须一起管住。
 const upperAssets = files
   .map(([name]) => name)
-  .filter((n) => n.startsWith("assets/") && path.basename(n) !== path.basename(n).toLowerCase());
+  .filter((n) => (n.startsWith("assets/") || n.startsWith("ui/"))
+    && path.basename(n) !== path.basename(n).toLowerCase());
 if (upperAssets.length) {
-  console.error("\n[FATAL] 以下资源文件名含大写字母（Linux 大小写敏感，会导致跨平台 404）：");
+  console.error("\n[FATAL] 以下包内文件名含大写字母（Linux 大小写敏感，会导致跨平台 404）：");
   upperAssets.forEach((f) => console.error("   - " + f));
   console.error("\n        修复：git mv -f assets/Old.svg assets/old.svg（Windows 上必须带 -f）。\n");
   process.exit(1);
 }
 
-console.log("  商店闸门通过：LICENSE 存在 / 包内 " + files.length + " 个文件全部 LF / 资源名全小写");
+console.log("  商店闸门通过：LICENSE 存在 / 包内 " + files.length + " 个文件全部 LF / assets+ui 文件名全小写");
 
 // ---- 8) checksums.json 必须精确覆盖除自身与 signature.json 外的全部文件 ----
 const checksums = { algorithm: "sha256", files: {} };

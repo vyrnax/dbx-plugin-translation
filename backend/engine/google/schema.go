@@ -5,7 +5,9 @@ import "github.com/vyrnax/translation/engine"
 // schema 返回 Google 翻译的配置表单描述。
 func schema() engine.Schema {
 	return engine.Schema{
+
 		Kind:          Kind,
+		Icon:          "google.svg",
 		Label:         "Google 翻译",
 		LabelEn:       "Google Translate",
 		DefaultName:   "Google 翻译",

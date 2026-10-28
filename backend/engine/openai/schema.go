@@ -9,7 +9,9 @@ import "github.com/vyrnax/translation/engine"
 // 适配器代码在同一个包里，不会出现「后端加了字段但前端表单没跟上」。
 func schema() engine.Schema {
 	return engine.Schema{
+
 		Kind:    Kind,
+		Icon:    "openai.svg",
 		Label:   "OpenAI 兼容大模型",
 		LabelEn: "OpenAI-compatible LLM",
 		// 默认名用「大模型」而不是「OpenAI」：这套协议被 DeepSeek、通义、

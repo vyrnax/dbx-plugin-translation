@@ -391,7 +391,14 @@ func TestDefaultEngine_FallbackToEnabled(t *testing.T) {
 	}
 }
 
-// TestReorderEngines 验证排序生效且未列出的引擎不消失。
+// TestReorderEngines 验证重排生效、未列出的引擎不消失，且默认引擎永远置顶。
+//
+// 「默认引擎置顶」是有意的产品契约，不是实现副作用：
+// 用户在引擎列表里拖动排序或切换默认引擎后，翻译页的引擎下拉必须按
+// 「默认第一、其余按列表顺序」重建，否则「记住上次选择」的恢复逻辑
+// 会与用户看到的顺序打架。因此本用例同时钉住两件事：
+//  1. 置顶只影响默认引擎自己，其余引擎的相对顺序仍完全由 ord 决定；
+//  2. 未出现在重排列表里的引擎排到最后，而不是消失。
 func TestReorderEngines(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"e1", "e2", "e3"} {
@@ -399,19 +406,35 @@ func TestReorderEngines(t *testing.T) {
 			t.Fatalf("保存失败: %v", err)
 		}
 	}
-	// 只列出两个，e3 应排到后面而不是消失
+	// SaveEngine 会把第一个入库的引擎自动设为默认，所以此时默认是 e1。
+	// 只列出两个，e3 应排到后面而不是消失。
 	if _, err := s.ReorderEngines([]string{"e2", "e1"}, -1); err != nil {
 		t.Fatalf("重排失败: %v", err)
 	}
-	list, _ := s.ListEngines()
-	if len(list) != 3 {
-		t.Fatalf("引擎数量 = %d, 期望 3（未列出的不应消失）", len(list))
+	order := func() string {
+		list, err := s.ListEngines()
+		if err != nil {
+			t.Fatalf("列表查询失败: %v", err)
+		}
+		if len(list) != 3 {
+			t.Fatalf("引擎数量 = %d, 期望 3（未列出的不应消失）", len(list))
+		}
+		return list[0].ID + "," + list[1].ID + "," + list[2].ID
 	}
-	if list[0].ID != "e2" || list[1].ID != "e1" {
-		t.Errorf("顺序错误: %s, %s, %s", list[0].ID, list[1].ID, list[2].ID)
+	// e1 是默认引擎 → 置顶；e2 被重排到 ord=0，e1 因此排在它前面；
+	// e3 不在重排列表里，被整体加了偏移量，必须落到最后。
+	if got := order(); got != "e1,e2,e3" {
+		t.Errorf("默认引擎置顶后的顺序 = %s, 期望 e1,e2,e3", got)
 	}
-	if list[2].ID != "e3" {
-		t.Errorf("未列出的引擎应排在最后，得到 %s", list[2].ID)
+
+	// 把默认引擎换成 e3：重排结果本身不变，只是 e3 顶到最前。
+	// 这一步才真正证明「重排生效」——只测上面那一组的话，
+	// 全为 0 的 ord 也能凑出同样的顺序，测试就失去意义。
+	if _, err := s.SetDefaultEngine("e3", -1); err != nil {
+		t.Fatalf("设置默认引擎失败: %v", err)
+	}
+	if got := order(); got != "e3,e2,e1" {
+		t.Errorf("默认引擎切换后的顺序 = %s, 期望 e3,e2,e1", got)
 	}
 }
 

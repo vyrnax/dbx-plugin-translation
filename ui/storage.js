@@ -55,7 +55,7 @@
   var MAX_UPSTREAM_BYTES = 1500 * 1000;
 
   /* ============ 版本号（打包脚本会校验它与 manifest.version 一致）============ */
-  var UI_VERSION = "0.2.2";
+  var UI_VERSION = "0.2.3";
 
   /* ============ 诊断日志 ============
    * 安装后白屏 / 存不上时，这份报告是唯一的排查证据。
@@ -510,6 +510,112 @@
 
   /* ============ 对外 API ============ */
 
+  /* ============ 引擎图标 ============
+   *
+   * 图标文件名由各引擎在自己的 schema 里声明（Schema.Icon），前端只认这个字段，
+   * 因此「新增引擎 = 新增一个 Go 子包 + 一行 Register + 放一个 SVG」，前端零改动。
+   *
+   * 为什么必须走 readAsset 而不是直接 <img src="icons/x.svg">：
+   *   工作台页面是 about:srcdoc 的 opaque origin 沙箱，CSP 是
+   *   `default-src 'none'; img-src data: blob:; connect-src 'none'` ——
+   *   既没有 'self'，也没有相对 URL 的基准，直接写 src 一律加载失败。
+   *   只能让宿主把资源读出来（ui.readAsset），前端转成 data URI 交给 img。
+   *
+   * 为什么路径要写成 "ui/icons/..."：
+   *   宿主的 ui.readAsset 明确拒绝 UI root 之外的路径（实现里抛
+   *   "Asset is outside UI root"），所以图标必须放在 ui/ 下而不是仓库根的 assets/。
+   *   带 ui/ 前缀的写法在「剥掉 ui/ 再相对 UI root 解析」和「相对插件根解析」
+   *   两种实现下都能命中，最稳。
+   *
+   * 失败一律静默退回首字母色块：老宿主可能没有 readAsset，图标文件也可能缺失。
+   * 图标是纯装饰，绝不该让它把引擎列表变成空白或报错。
+   */
+  var iconCache = {};   // fileName -> Promise<dataURI|null>，同一图标只读一次
+  var iconLogged = false;
+
+  // iconDataUrl 用【多路径 + 多 API 回退】直到取到为止。
+  //
+  // 为什么路径要试两种：
+  //   dev-host 的 ui.readAsset 会先剥掉 "ui/" 前缀再相对 UI root 解析，
+  //   而真实宿主既可能也剥前缀、也可能不剥 —— 两者语义不同，无法提前确定。
+  //   依次尝试 "icons/<f>"（相对 UI root）与 "ui/icons/<f>"（相对插件根），
+  //   哪个命中用哪个，两个都失败才退回 null（首字母色块）。
+  //
+  // 为什么 API 也要回退：
+  //   readAsset 返回 {dataBase64, contentType}，我们转成 data URI —— CSP 明确允许 img-src data:。
+  //   readAssetUrl 返回的可能是 blob:/http(s): URL，http(s) 会被 CSP 的 img-src 拦掉，
+  //   所以只作为 readAsset 不可用时的最后手段。
+  function iconDataUrl(fileName) {
+    if (!fileName) { return Promise.resolve(null); }
+    if (iconCache[fileName]) { return iconCache[fileName]; }
+    var paths = ["icons/" + fileName, "ui/icons/" + fileName];
+    iconCache[fileName] = tryPaths(paths, 0).then(function (url) {
+      if (!url && !iconLogged) {
+        iconLogged = true;
+        note("引擎图标加载", false,
+          "readAsset=" + (!!api && typeof api.readAsset === "function")
+          + " readAssetUrl=" + (!!api && typeof api.readAssetUrl === "function")
+          + " 路径均失败: " + paths.join(" / "));
+      } else if (url && !iconLogged) {
+        iconLogged = true;
+        note("引擎图标加载", true, "ok");
+      }
+      return url;
+    });
+    return iconCache[fileName];
+  }
+
+  function tryPaths(paths, i) {
+    if (i >= paths.length) { return Promise.resolve(null); }
+    return readOneAsset(paths[i]).then(function (url) {
+      return url ? url : tryPaths(paths, i + 1);
+    });
+  }
+
+  function readOneAsset(path) {
+    if (!api) { return Promise.resolve(null); }
+    if (typeof api.readAsset === "function") {
+      return Promise.resolve(api.readAsset(path)).then(function (asset) {
+        if (!asset || !asset.dataBase64) { return null; }
+        return "data:" + (asset.contentType || "image/svg+xml") + ";base64," + asset.dataBase64;
+      }).catch(function () { return null; });
+    }
+    if (typeof api.readAssetUrl === "function") {
+      return Promise.resolve(api.readAssetUrl(path)).then(function (u) {
+        return (typeof u === "string" && u) ? u : null;
+      }).catch(function () { return null; });
+    }
+    return Promise.resolve(null);
+  }
+
+  // engineIcon 构造一个固定尺寸的图标槽：先放首字母保证布局立即稳定，
+  // 资源到位后再替换成 <img>。这样无论宿主有没有 readAsset，行高都不会跳。
+  function engineIcon(kindInfo, fallbackText) {
+    var info = kindInfo || {};
+    var name = fallbackText || info.label || info.labelEn || info.kind || "?";
+    var wrap = document.createElement("span");
+    wrap.className = "eng-icon";
+
+    var letter = document.createElement("span");
+    letter.className = "eng-icon-letter";
+    letter.textContent = String(name).trim().charAt(0).toUpperCase() || "?";
+    wrap.appendChild(letter);
+
+    if (!info.icon) { return wrap; }
+    iconDataUrl(info.icon).then(function (url) {
+      if (!url) { return; }
+      wrap.textContent = "";
+      var img = document.createElement("img");
+      img.className = "eng-icon-img";
+      img.alt = "";                       // 装饰性图形，不给读屏器制造噪音
+      img.draggable = false;
+      img.onerror = function () { if (!wrap.firstChild) { wrap.appendChild(letter); } };
+      img.src = url;
+      wrap.appendChild(img);
+    });
+    return wrap;
+  }
+
   var Store = {
     VERSION: UI_VERSION,
 
@@ -630,7 +736,12 @@
     // themeObject 返回完整主题负载 { appearance, tokens, editor }，
     // 供 app.js 的 applyTheme 把宿主的颜色/字体/圆角 token 应用到文档根元素。
     themeObject: function () { return readThemeObject(); },
-    locale: function () { try { return (api && api.locale) || "zh-CN"; } catch (e) { return "zh-CN"; } }
+    locale: function () { try { return (api && api.locale) || "zh-CN"; } catch (e) { return "zh-CN"; } },
+    // engineIcon 返回可直接 appendChild 的节点；iconDataUrl 供需要裸 URL 的场景使用
+    engineIcon: engineIcon,
+    iconDataUrl: iconDataUrl,
+    // hasIconApi 供诊断报告说明「为什么图标退成了字母」
+    hasIconApi: function () { return !!(api && typeof api.readAsset === "function"); }
   };
 
   /* ============ rev 乐观锁与冲突重试 ============

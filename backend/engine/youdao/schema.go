@@ -5,7 +5,9 @@ import "github.com/vyrnax/translation/engine"
 // schema 返回有道翻译的配置表单描述。
 func schema() engine.Schema {
 	return engine.Schema{
+
 		Kind:          Kind,
+		Icon:          "youdao.svg",
 		Label:         "有道翻译",
 		LabelEn:       "Youdao Translate",
 		DefaultName:   "有道翻译",

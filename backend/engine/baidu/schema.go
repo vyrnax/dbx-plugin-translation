@@ -8,7 +8,9 @@ import "github.com/vyrnax/translation/engine"
 // 且 AppID 不是敏感信息（明文 config 即可），密钥才是 secret。
 func schema() engine.Schema {
 	return engine.Schema{
+
 		Kind:          Kind,
+		Icon:          "baidu.svg",
 		Label:         "百度翻译",
 		LabelEn:       "Baidu Translate",
 		DefaultName:   "百度翻译",

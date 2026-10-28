@@ -8,6 +8,9 @@
 *.exe
 _dbx-plugin-translation
 
+# 本地跑构建/发布脚本时的临时日志（绝不提交）
+/_*.log
+
 # 校验/探测临时目录（e2e 与 verify 会自建自清，这里兜底防止残留被提交）
 /_verify_tmp/
 /_e2e_tmp/

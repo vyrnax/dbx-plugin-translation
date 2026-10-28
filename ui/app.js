@@ -41,6 +41,9 @@
     prefs: {},
     engines: [],
     currentEngineId: "",
+    enginesSeen: false,
+    engineMenuOpen: false, // 翻译页引擎下拉是否展开
+    engineList: [],        // 当前有序引擎列表（默认第一），供下拉与按钮复用  // 首次加载引擎列表后置 true，用于区分「初始化」与「顺序/默认真的变了」
     sourceLang: "auto",
     targetLang: "zh",
     // 流式任务
@@ -512,45 +515,134 @@
   /* ============ 引擎下拉 ============ */
 
   function renderEngineSelect() {
-    var sel = $("sel-engine");
-    if (!sel) { return; }
-    var list = (E && E.enabledEngines) ? E.enabledEngines() : [];
-    sel.textContent = "";
+    var menu = $("sel-engine-menu");
+    var btn = $("sel-engine-btn");
+    if (!menu || !btn) { return; }
+    var list = orderedEngineList();
+    state.engineList = list;
+    menu.textContent = "";
 
     if (!list.length) {
-      sel.appendChild(h("option", { value: "", text: "（无可用引擎）" }));
-      sel.disabled = true;
+      btn.disabled = true;
       state.currentEngineId = "";
+      updateEngineButton();
       updateEngineBadge();
       updateNoEngineState();
       return;
     }
-    sel.disabled = false;
+    btn.disabled = false;
 
     list.forEach(function (e) {
-      sel.appendChild(h("option", {
-        value: e.id,
-        text: e.name + (e.isDefault ? " ★" : "")
-      }));
+      var active = e.id === state.currentEngineId;
+      var item = h("li", {
+        class: "kind-item" + (active ? " is-active" : ""),
+        role: "option",
+        "aria-selected": active ? "true" : "false"
+      }, [
+        S.engineIcon(engineKindInfo(e), e.name || e.kind),
+        h("span", { class: "kind-item-label", text: e.name || e.kind }),
+        e.isDefault ? h("span", { class: "badge primary", text: t("defaultBadge") }) : null
+      ]);
+      item.addEventListener("click", function () { selectEngine(e.id); });
+      menu.appendChild(item);
     });
 
-    // 保持用户之前的选择；若已不存在则回退到默认引擎
-    var stillThere = false;
-    for (var i = 0; i < list.length; i++) {
-      if (list[i].id === state.currentEngineId) { stillThere = true; break; }
-    }
-    if (!stillThere) {
-      var def = (E && E.defaultEngine) ? E.defaultEngine() : list[0];
-      state.currentEngineId = def ? def.id : list[0].id;
-    }
-    sel.value = state.currentEngineId;
+    // 选中项恢复顺序：
+    //   1) state.currentEngineId —— 本次会话里用户的选择（含刚发生的变化）
+    //   2) state.prefs.currentEngineId —— 跨会话记住的最后选择
+    //   3) 默认引擎（有序列表第一项）
+    var wanted = state.currentEngineId || state.prefs.currentEngineId || "";
+    if (!list.some(function (x) { return x.id === wanted; })) { wanted = defaultEngineId(list); }
+    state.currentEngineId = wanted;
+    updateEngineButton();
     updateEngineBadge();
     updateNoEngineState();
   }
 
-  function updateEngineBadge() {
+  // orderedEngineList 返回【默认引擎永远第一】的启用引擎列表。
+  // 后端 ListEngines 已按 is_default DESC 排，这里再排一次是双保险：
+  // 降级模式（内存后端）不走 SQL，顺序只由这份前端逻辑保证。
+  function orderedEngineList() {
+    var list = (E && E.enabledEngines) ? E.enabledEngines() : [];
+    return list.slice().sort(function (a, b) {
+      if (a.isDefault !== b.isDefault) { return a.isDefault ? -1 : 1; }
+      return (a.ord || 0) - (b.ord || 0);
+    });
+  }
+
+  function engineKindInfo(e) {
+    return (E && E.kindInfo) ? (E.kindInfo(e.kind) || {}) : {};
+  }
+
+  // updateEngineButton 同步下拉按钮上显示的图标与文案（= 当前选中引擎）。
+  function updateEngineButton() {
+    var lbl = $("sel-engine-btn-label");
+    var box = $("sel-engine-btn-icon");
     var e = currentEngine();
-    txt("engine-badge", e ? e.name : "—");
+    if (lbl) { lbl.textContent = e ? (e.name || e.kind) : (state.engineList.length ? "—" : "（无可用引擎）"); }
+    if (box) {
+      box.textContent = "";
+      if (e) { box.appendChild(S.engineIcon(engineKindInfo(e), e.name || e.kind)); }
+    }
+    var btn = $("sel-engine-btn");
+    if (btn) { btn.setAttribute("aria-expanded", state.engineMenuOpen ? "true" : "false"); }
+  }
+
+  // selectEngine 是「换引擎」的唯一入口：写状态 + 持久化 + 刷新界面。
+  // 换引擎后语言支持范围会变（不同引擎语言集不同），所以要重算语言下拉。
+  function selectEngine(id) {
+    if (!id) { return; }
+    if (id !== state.currentEngineId) {
+      state.currentEngineId = id;
+      persistEngineSelection(id);
+      renderEngineSelect();
+      renderLangSelects();
+    }
+    closeEngineMenu();
+  }
+
+  function openEngineMenu() {
+    var m = $("sel-engine-menu");
+    if (m) { m.hidden = false; }
+    state.engineMenuOpen = true;
+    updateEngineButton();
+  }
+
+  function closeEngineMenu() {
+    var m = $("sel-engine-menu");
+    if (m) { m.hidden = true; }
+    state.engineMenuOpen = false;
+    updateEngineButton();
+  }
+
+  // defaultEngineId 返回列表里的默认引擎 id；没有默认则返回第一个（有序列表的第一项）。
+  function defaultEngineId(list) {
+    for (var i = 0; i < list.length; i++) { if (list[i].isDefault) { return list[i].id; } }
+    return list.length ? list[0].id : "";
+  }
+
+  // persistEngineSelection 把当前选择的引擎 id 写进 prefs，跨会话记住。
+  // 只有用户在翻译页主动切换引擎、或顺序/默认变化触发重置时才会写，
+  // 其它情况（例如临时回退默认）不覆盖用户记忆。
+  function persistEngineSelection(id) {
+    state.prefs.currentEngineId = id || "";
+    if (S && S.setPrefs) { S.setPrefs({ currentEngineId: id || "" }).catch(function () { /* 忽略 */ }); }
+  }
+
+  function updateEngineBadge() {
+    // 徽标要带引擎图标，所以不能再用 txt()（它只写纯文本）。
+    // 这里全程用 createElement + textContent，绝不拼 innerHTML ——
+    // 引擎名是用户输入，属于不可信数据（见 AGENTS.md 铁律与 XSS 约束）。
+    var box = $("engine-badge");
+    if (!box) { return; }
+    box.textContent = "";
+    var e = currentEngine();
+    if (!e) { box.appendChild(document.createTextNode("\u2014")); return; }
+    var kindInfo = (typeof E !== "undefined" && E && E.kindInfo) ? (E.kindInfo(e.kind) || {}) : {};
+    box.appendChild(S.engineIcon(kindInfo, e.name));
+    var name = document.createElement("span");
+    name.textContent = e.name;
+    box.appendChild(name);
   }
 
   function updateNoEngineState() {
@@ -1142,11 +1234,17 @@
     on("sel-target-lang", "change", function () {
       state.targetLang = val("sel-target-lang");
     });
-    on("sel-engine", "change", function () {
-      state.currentEngineId = val("sel-engine");
-      updateEngineBadge();
-      // 换引擎后要重新算语言支持范围（不同引擎支持的语言不同）
-      renderLangSelects();
+    // 引擎下拉已从原生 <select> 换成自绘下拉：按钮开合，选项走 selectEngine()
+    click("sel-engine-btn", function () {
+      if (state.engineMenuOpen) { closeEngineMenu(); } else { openEngineMenu(); }
+    });
+    // 点击下拉以外区域 / 按 Esc 收起
+    document.addEventListener("click", function (ev) {
+      var sel = $("sel-engine");
+      if (sel && !sel.contains(ev.target)) { closeEngineMenu(); }
+    });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") { closeEngineMenu(); }
     });
     on("chk-instant", "change", function () {
       var v = isChecked("chk-instant");
@@ -1464,10 +1562,29 @@
   }
 
   function onEnginesChanged(engines) {
+    var first = !state.enginesSeen;
+    var prevSig = engineOrderSig(state.engines || []);
     state.engines = engines || [];
+    state.enginesSeen = true;
+    var curSig = engineOrderSig(state.engines);
+
+    // 只要【列表顺序】或【默认引擎】变了，就重置翻译页的引擎选择，
+    // 让下拉框重新以「默认第一」呈现。第一次加载不算变化（prev 是空），
+    // 否则启动时会把跨会话记住的选择清掉。
+    if (!first && prevSig !== curSig) {
+      state.currentEngineId = "";
+      persistEngineSelection("");
+    }
     renderEngineSelect();
     renderLangSelects();
     updateNoEngineState();
+  }
+
+  // engineOrderSig 计算「顺序 + 默认引擎」的签名：两者之一变了签名就变。
+  function engineOrderSig(list) {
+    var ids = list.map(function (e) { return e.id; }).join("|");
+    var def = list.filter(function (e) { return e.isDefault; }).map(function (e) { return e.id; }).join(",");
+    return ids + "#" + def;
   }
 
   // onReuseHistory 处理「用这条历史重新翻译」：
@@ -1480,7 +1597,7 @@
     if (item.dstLang) { state.targetLang = item.dstLang; setVal("sel-target-lang", item.dstLang); }
     if (item.engineId && E && E.findById(item.engineId)) {
       state.currentEngineId = item.engineId;
-      setVal("sel-engine", item.engineId);
+      renderEngineSelect();   // 自绘下拉没有 .value 可写，必须走重渲染
     }
     switchView("translate");
     resetTarget();

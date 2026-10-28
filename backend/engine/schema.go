@@ -81,8 +81,22 @@ type Field struct {
 
 // Schema 是一个引擎类型的完整表单描述。
 type Schema struct {
-	Kind    string `json:"kind"`              // 引擎类型标识（Register 时自动填入）
-	Label   string `json:"label"`             // 显示名（中文）
+	Kind  string `json:"kind"`  // 引擎类型标识（Register 时自动填入）
+	Label string `json:"label"` // 显示名（中文）
+	// Icon 是该引擎图标的文件名（相对 UI 的 icons/ 目录，例如 "deepl.svg"）。
+	//
+	// 为什么由引擎声明、而不是前端按 kind 拼路径硬编码：
+	//   前端的承诺是「新增引擎零改动」。若前端维护一张 icons/<kind>.svg 映射表，
+	//   就等于要求文件名永远等于 kind 名 —— 而本项目实际不是：阿里云的图标文件
+	//   叫 ali.svg、本地 CLI 的叫 cli.svg。映射权交给引擎自己，前端只做通用渲染。
+	//
+	// 为什么只存文件名而不是完整路径：
+	//   宿主的 ui.readAsset 只能读 UI root 内的文件（其实现里明确抛
+	//   "Asset is outside UI root"），所以图标必须放在 ui/icons/ 下。
+	//   这个目录位置属于前端实现细节，不该泄漏进后端契约，由前端自己加前缀。
+	//
+	// 留空时前端退化为「首字母色块」，不报错、布局不抖。
+	Icon    string `json:"icon,omitempty"`
 	LabelEn string `json:"labelEn,omitempty"` // 显示名（英文）
 	// DefaultName / DefaultNameEn 是新建该类型引擎时【自动填入】的名称。
 	//

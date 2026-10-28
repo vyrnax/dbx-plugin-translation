@@ -5,7 +5,9 @@ import "github.com/vyrnax/translation/engine"
 // schema 返回 DeepL 的配置表单描述。
 func schema() engine.Schema {
 	return engine.Schema{
+
 		Kind:          Kind,
+		Icon:          "deepl.svg",
 		Label:         "DeepL",
 		LabelEn:       "DeepL",
 		DefaultName:   "DeepL 翻译",

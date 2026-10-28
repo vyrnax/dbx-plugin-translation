@@ -48,6 +48,20 @@
   --radius: 10px;
   --radius-sm: 6px;
 
+  /* 状态栏固定高度：与宿主 DBX 左侧栏底部状态条对齐（实测约 28px）。
+     为什么必须写成变量并显式固定，而不是靠 padding 撑开：
+     #app 是 grid，最后一行原本写 auto，而 1fr 实际等于 minmax(auto,1fr) ——
+     主区内容一超高，那一行就会被撑开并挤压状态栏，导致状态栏随内容变形、
+     甚至被顶出可视区。把行高写成固定轨道 + 给 #main 加 min-height:0 才能根治。 */
+  --statusbar-h: 28px;
+  /* 引擎图标槽：所有图标经光学归一（内容最长边统一占画布 88%）后，
+     在这个固定方槽里显示为完全一致的视觉尺寸。 */
+  --icon-size: 18px;
+  /* topbar 品牌图标里「文」字的颜色：随明暗主题切换。
+     内联 SVG 能直接吃 CSS 变量，比 assets/plugin.svg 里的
+     prefers-color-scheme 更可靠（那个只在宿主按图片加载时才生效）。 */
+  --brand-fg: #4B5563;
+
   /* 字体：优先用宿主 DBX 投递的 --font-sans / --font-mono，
      宿主没投递时（例如开发宿主）回退到下面的兜底字体栈。
 
@@ -67,6 +81,7 @@
 }
 
 body[data-theme="dark"] {
+  --brand-fg: #F0F4F8;
   --bg: #16181d;
   --panel: #1f2329;
   --panel-2: #262b32;
@@ -109,11 +124,21 @@ body {
 }
 
 #app {
-  display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  /* 用 flex 列，不用 grid。
+     原因：#app 里有【五个】在流子元素（topbar、两条 banner、main、statusbar），
+     而 grid-template-rows 只声明了四条轨道 —— 第五条（statusbar）会落到
+     隐式 auto 行上，于是「固定状态栏轨道」根本没作用到它身上，
+     状态栏依旧随主区内容上下漂移。flex 让每个子元素自己声明伸缩，
+     以后再加一条 banner 也不会把布局挤坏。 */
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
 }
+
+/* 顶部栏与两条全局警示条：永不伸缩 */
+#topbar { flex: 0 0 auto; }
+.banner { flex: 0 0 auto; }
 
 /* [hidden] 必须显式声明，否则 display:flex/grid 会顶掉默认隐藏 */
 [hidden] { display: none !important; }
@@ -180,7 +205,13 @@ body {
 .banner-warn { background: var(--warn-weak); color: var(--warn); }
 
 /* ============ 主体 ============ */
-#main { overflow: hidden; position: relative; }
+/* min-height:0 是关键：grid/flex 子项默认 min-height:auto，
+   内容超高时不会收缩，而是把容器撑爆并挤压兄弟轨道（状态栏）。
+   加了它，主区才会真正在自己内部滚动。 */
+/* flex:1 1 auto + min-height:0 是状态栏锁底的关键：
+   flex 子项默认 min-height:auto，内容超高时不会收缩而是把容器撑爆，
+   从而把 statusbar 顶出可视区。加上 min-height:0 主区才会在自己内部滚动。 */
+#main { flex: 1 1 auto; min-height: 0; overflow: hidden; position: relative; }
 .view { height: 100%; overflow: auto; padding: 14px 16px; }
 #view-translate { display: flex; flex-direction: column; padding: 12px 16px; gap: 10px; }
 
@@ -333,7 +364,9 @@ textarea.input { height: auto; padding: 8px 9px; line-height: 1.6; resize: verti
 /* 拖拽排序 */
 .engine-card.dragging { opacity: .45; }
 .engine-card.drag-over { border-top: 2px solid var(--primary); }
-.drag-handle { cursor: grab; color: var(--text-3); font-size: 15px; user-select: none; }
+.drag-handle { cursor: grab; color: var(--text-3); font-size: 15px; user-select: none; flex: 0 0 auto; }
+.drag-handle.drag-disabled { cursor: default; color: var(--border-strong); opacity: .55; }
+.engine-card.dragging { opacity: .45; box-shadow: 0 4px 16px rgba(20,30,50,.18); }
 .drag-handle:active { cursor: grabbing; }
 
 /* ============ 历史列表 ============ */
@@ -465,8 +498,16 @@ textarea.input { height: auto; padding: 8px 9px; line-height: 1.6; resize: verti
 /* ============ 状态条 ============ */
 .statusbar {
   display: flex; align-items: center; gap: 8px;
-  padding: 5px 16px; background: var(--panel);
-  border-top: 1px solid var(--border); font-size: 11px; color: var(--text-2);
+  /* 高度由 --statusbar-h 固定，不再由 padding+行高决定；
+     flex: 0 0 auto 保证它在任何布局下都不被压缩。 */
+  box-sizing: border-box;
+  height: var(--statusbar-h);
+  flex: 0 0 var(--statusbar-h);   /* 固定高度，永不被压缩也不参与伸缩 */
+  padding: 0 16px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  font-size: 11px; line-height: 1; color: var(--text-2);
+  white-space: nowrap; overflow: hidden;
 }
 .status-dot {
   width: 7px; height: 7px; border-radius: 50%;
@@ -476,7 +517,10 @@ textarea.input { height: auto; padding: 8px 9px; line-height: 1.6; resize: verti
 .status-dot.warn { background: var(--warn); }
 .status-dot.err { background: var(--danger); }
 .status-text { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.status-version { font-family: var(--mono); color: var(--text-3); }
+/* 版本信息靠右且永不收缩：它和状态文字共用一行，
+   状态文字过长时省略号截断，版本号必须始终可见。 */
+.status-version { font-family: var(--mono); color: var(--text-3); flex: 0 0 auto; margin-left: auto; }
+.status-dot { flex: 0 0 auto; }
 
 /* ============ 轻提示 ============ */
 .toast {
@@ -499,3 +543,87 @@ textarea.input { height: auto; padding: 8px 9px; line-height: 1.6; resize: verti
   .setting-label { flex: 0 0 140px; }
   .engine-badge { display: none; }
 }
+
+/* ============ 引擎图标 ============
+ * 图标由 schema.icon 驱动、经 storage.js 的 engineIcon() 渲染。
+ * 槽位（.eng-icon）尺寸固定，内部 <img> 用 object-fit: contain 适配，
+ * 因此无论各引擎 SVG 原始画布是 24、32 还是 1024，显示出来都一样大。
+ * 读不到资源时槽位里放的是首字母（.eng-icon-letter），宽高完全相同 ——
+ * 布局不会在图标加载完成的一瞬间跳动。
+ */
+.eng-icon {
+  width: var(--icon-size);
+  height: var(--icon-size);
+  flex: 0 0 var(--icon-size);   /* 不被压缩，也不撑大父容器 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.eng-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;          /* 等比适配，绝不拉伸变形 */
+  display: block;
+  pointer-events: none;         /* 图标纯装饰，不拦截点击 */
+  -webkit-user-drag: none;
+}
+.eng-icon-letter {
+  width: 100%;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: var(--panel-3);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* 弹框里「引擎类型」下拉框左边的图标预览 */
+.kind-row { display: flex; align-items: center; gap: 8px; }
+.kind-row .select { flex: 1 1 auto; min-width: 0; }
+.kind-icon { display: inline-flex; align-items: center; }
+.kind-icon .eng-icon { --icon-size: 20px; }
+
+/* 主页面引擎徽标：图标 + 名称同行对齐 */
+#engine-badge { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+#engine-badge .eng-icon { --icon-size: 15px; }
+
+/* ============ 引擎类型自定义下拉 ============
+ * 原生 <select> 无法在 <option> 里渲染图片，所以这里自绘一个下拉。
+ * 尺寸与原生 select 对齐（复用 --radius-sm / --border / --panel 语义）。
+ */
+.kind-select { position: relative; flex: 1 1 auto; min-width: 0; }
+.kind-select-btn {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--panel); color: var(--text);
+  font: inherit; font-size: 13px; text-align: left;
+  cursor: pointer;
+}
+.kind-select-btn:disabled { cursor: not-allowed; opacity: .6; }
+.kind-btn-icon { display: inline-flex; align-items: center; }
+.kind-btn-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.caret { color: var(--text-3); flex: 0 0 auto; font-size: 11px; }
+.kind-menu {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px);
+  margin: 0; padding: 4px; list-style: none;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-sm);
+  z-index: 30; max-height: 240px; overflow: auto;
+}
+.kind-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px; border-radius: 5px; cursor: pointer;
+  font-size: 13px;
+}
+.kind-item:hover { background: var(--panel-2); }
+.kind-item.is-active { background: var(--primary-weak); }
+.kind-item-label { flex: 1 1 auto; }
+.kind-item .eng-icon { --icon-size: 18px; }
+.kind-btn-icon .eng-icon { --icon-size: 16px; }

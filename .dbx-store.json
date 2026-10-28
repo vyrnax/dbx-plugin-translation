@@ -17,7 +17,7 @@
   "source": "https://github.com/vyrnax/dbx-plugin-translation",
   "homepage": "https://github.com/vyrnax/dbx-plugin-translation",
   "license": "Apache-2.0",
-  "releaseNotes": "0.2.2：商店上架整改 —— 新增 Apache-2.0 LICENSE；发布产物改由 GitHub Actions 从 tag 用固定 Go 工具链（1.21.13）真机构建，sidecar 内嵌 vcs.revision 可在公开仓库核验；候选元数据改为 DBX Store 扁平 schema 并使用 release 资产绝对 HTTPS 地址；listing 补全 8 类引擎清单，并披露原文发往所选第三方服务、明文 SQLite 历史落盘、localcli 参数化执行本机命令。",
+  "releaseNotes": "0.2.3：引擎图标接入界面 —— 翻译页的引擎选择、新增引擎的类型选择与引擎列表都会显示各引擎 logo；插件图标换新设计并自动适配深浅主题。底部状态栏固定在窗口最底部，不再随页面内容上下移动。引擎列表支持拖拽排序（默认引擎始终排在第一位），翻译页会记住你上次选择的引擎。同时精简了引擎列表里信息量低的密钥指纹显示。",
   "localizations": {
     "en": {
       "name": "Translation",

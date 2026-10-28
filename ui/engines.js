@@ -34,7 +34,10 @@
     engines: [],         // 引擎列表
     rev: 0,
     editing: null,       // 正在编辑的引擎（null 表示新建）
-    editingKind: "",     // 弹框里当前选中的 kind
+    editingKind: "",
+    kindLocked: false,     // 编辑已有引擎时类型锁定，不可切换
+    kindMenuOpen: false,   // 自定义类型下拉是否展开
+     // 弹框里当前选中的 kind
     secretTouched: false,// 用户是否动过密钥输入框
     // nameTouched 记录用户是否【手动改过】引擎名称。
     //
@@ -190,13 +193,16 @@
     if (kindInfo.streaming) { badges.push(h("span", { class: "badge ok", text: "流式" })); }
 
     var nameRow = h("div", { class: "engine-name" }, [
+      // 图标放在最前面，读不到时 engineIcon 自己退成首字母色块，宽度不变、行高不抖
+      S.engineIcon(kindInfo, e.name || e.kind),
       h("span", { text: e.name || e.kind }),
       h("span", { class: "badge", text: label(kindInfo, "label", "labelEn") || e.kind })
     ].concat(badges));
 
+    // 列表行不再展示 🔑+指纹：它只能证明"存了一把密钥"，信息量低且让列表显得乱。
+    // 密钥是否已配置，用"编辑弹框里的密码框是否留空"就能判断，不必在列表里显示。
     var subRow = h("div", { class: "engine-sub" }, [
-      sub ? h("span", { text: sub }) : null,
-      e.hasSecret ? h("span", { class: "fingerprint", text: "  🔑 " + (e.fingerprint || "") }) : null
+      sub ? h("span", { text: sub }) : null
     ]);
 
     var actions = h("div", { class: "engine-actions" }, [
@@ -222,65 +228,101 @@
 
     var card = h("div", {
       class: "engine-card" + (e.isDefault ? " is-default" : "") + (e.enabled ? "" : " is-disabled"),
-      dataset: { id: e.id, index: String(index) },
-      draggable: "true"
+      dataset: { id: e.id, index: String(index) }
     }, [
-      h("span", { class: "drag-handle", title: "拖动排序" }, "⠿"),
+      // 默认引擎永远第一、不可拖走：它的 grip 显示为禁用态，不绑拖拽事件
+      h("span", {
+        class: "drag-handle" + (e.isDefault ? " drag-disabled" : ""),
+        title: e.isDefault
+          ? (isZh() ? "默认引擎固定在首位" : "Default engine is pinned first")
+          : (isZh() ? "拖动排序" : "Drag to reorder")
+      }, "⠿"),
       h("div", { class: "engine-main" }, [nameRow, subRow]),
       actions
     ]);
 
-    bindDrag(card, e, index);
+    bindGrip(card, e);
     return card;
   }
 
-  /* ============ 拖拽排序 ============
-   * 用原生 HTML5 drag & drop，不引第三方库。
-   * 排序结果通过 engines/reorder 持久化，侧车会把未列出的引擎排到后面
-   * （而不是丢弃），所以即使拖拽逻辑漏了某个引擎也不会导致它消失。
+  /* ============ 拖拽排序（指针事件版） ============
+   * 沙箱 iframe 里原生 HTML5 drag & drop 经常不触发（连 dragstart 都不发），
+   * 所以改用 pointerdown / pointermove / pointerup 手写拖拽 —— 不依赖 dataTransfer，
+   * 在任何宿主里都能工作。排序结果经 engines/reorder 持久化。
    */
-  var dragIndex = -1;
+  var pdrag = { id: "", el: null };
 
-  function bindDrag(card, e, index) {
-    card.addEventListener("dragstart", function (ev) {
-      dragIndex = index;
-      card.classList.add("dragging");
-      try { ev.dataTransfer.setData("text/plain", e.id); } catch (err) { /* 某些宿主不允许 */ }
-      if (ev.dataTransfer) { ev.dataTransfer.effectAllowed = "move"; }
-    });
-    card.addEventListener("dragend", function () {
-      dragIndex = -1;
-      card.classList.remove("dragging");
-      clearDragMarks();
-    });
-    card.addEventListener("dragover", function (ev) {
-      ev.preventDefault();
-      if (ev.dataTransfer) { ev.dataTransfer.dropEffect = "move"; }
-    });
-    card.addEventListener("dragenter", function () {
-      if (dragIndex >= 0 && dragIndex !== index) { card.classList.add("drag-over"); }
-    });
-    card.addEventListener("dragleave", function () { card.classList.remove("drag-over"); });
-    card.addEventListener("drop", function (ev) {
-      ev.preventDefault();
-      card.classList.remove("drag-over");
-      if (dragIndex < 0 || dragIndex === index) { return; }
-      applyReorder(dragIndex, index);
-    });
-  }
-
-  function clearDragMarks() {
+  function boxCards() {
     var box = $("engine-list");
-    if (!box) { return; }
-    var marks = box.querySelectorAll(".drag-over");
-    for (var i = 0; i < marks.length; i++) { marks[i].classList.remove("drag-over"); }
+    if (!box) { return []; }
+    return Array.prototype.slice.call(box.querySelectorAll(".engine-card"));
   }
 
-  function applyReorder(from, to) {
-    var ids = state.engines.map(function (e) { return e.id; });
-    var moved = ids.splice(from, 1)[0];
-    ids.splice(to, 0, moved);
-    // 乐观更新：先改界面，失败再回滚，避免用户等待
+  // bindGrip 只在非默认引擎的 grip 上挂拖拽；默认引擎固定首位，不参与排序。
+  function bindGrip(card, e) {
+    if (e.isDefault) { return; }
+    var grip = card.querySelector(".drag-handle");
+    if (!grip) { return; }
+
+    grip.addEventListener("pointerdown", function (ev) {
+      ev.preventDefault();
+      pdrag.id = e.id;
+      pdrag.el = card;
+      card.classList.add("dragging");
+      try { grip.setPointerCapture(ev.pointerId); } catch (err) { /* 忽略 */ }
+    });
+
+    grip.addEventListener("pointermove", function (ev) {
+      if (!pdrag.el || pdrag.el !== card) { return; }
+      ev.preventDefault();
+      var target = cardAt(ev.clientY);
+      if (!target || target === card) { return; }
+      var box = $("engine-list");
+      var r = target.getBoundingClientRect();
+      if (ev.clientY < r.top + r.height / 2) { box.insertBefore(card, target); }
+      else { box.insertBefore(card, target.nextSibling); }
+    });
+
+    function finish() {
+      if (pdrag.el !== card) { return; }
+      card.classList.remove("dragging");
+      pdrag.id = ""; pdrag.el = null;
+      commitOrder();
+    }
+    grip.addEventListener("pointerup", finish);
+    grip.addEventListener("pointercancel", finish);
+  }
+
+  function cardAt(clientY) {
+    var cards = boxCards();
+    for (var i = 0; i < cards.length; i++) {
+      var r = cards[i].getBoundingClientRect();
+      if (clientY >= r.top && clientY <= r.bottom) { return cards[i]; }
+    }
+    return null;
+  }
+
+  // commitOrder 读取 DOM 实际顺序，把默认引擎 id 提到最前，再持久化。
+  // 即使拖拽过程中 DOM 顺序短暂错乱，最终写回的顺序也始终满足"默认第一"。
+  function commitOrder() {
+    var cards = boxCards();
+    var ids = [];
+    for (var i = 0; i < cards.length; i++) {
+      var id = cards[i].getAttribute("data-id");
+      if (id) { ids.push(id); }
+    }
+    var def = null;
+    for (var j = 0; j < state.engines.length; j++) {
+      if (state.engines[j].isDefault) { def = state.engines[j].id; break; }
+    }
+    if (def) {
+      ids = ids.filter(function (x) { return x !== def; });
+      ids.unshift(def);
+    }
+    applyReorderIds(ids);
+  }
+
+  function applyReorderIds(ids) {
     var snapshot = state.engines.slice();
     state.engines = ids.map(function (id) {
       for (var i = 0; i < snapshot.length; i++) { if (snapshot[i].id === id) { return snapshot[i]; } }
@@ -292,7 +334,7 @@
       state.rev = (res && res.rev) || state.rev;
     }).catch(function (err) {
       reportErr("排序", err);
-      state.engines = snapshot;   // 回滚
+      state.engines = snapshot;
       renderList();
     });
   }
@@ -352,13 +394,12 @@
     show("btn-engine-delete", !!e);
     clearFormError();
 
-    renderKindSelect(e);
     // 新建时默认选第一个引擎类型（openai 覆盖面最广）
     state.editingKind = e ? e.kind : (state.kinds[0] ? state.kinds[0].kind : "");
-    setVal("engine-kind", state.editingKind);
     // 编辑时锁定类型：换类型等于换一套完全不同的配置，应该删掉重建
-    var kindSel = $("engine-kind");
-    if (kindSel) { kindSel.disabled = !!e; }
+    state.kindLocked = !!e;
+    closeKindMenu();
+    renderKindSelect();
 
     // 名称框：编辑时回填已有名称并标记为「用户已定名」（不再自动跟随类型），
     // 新建时填入所选类型的默认名。
@@ -425,18 +466,82 @@
     setVal("engine-name", defaultNameFor(newKind));
   }
 
-  function renderKindSelect(e) {
-    var sel = $("engine-kind");
-    if (!sel) { return; }
-    sel.textContent = "";
+  function kindLabel(k) { return label(k, "label", "labelEn") || k.kind; }
+
+  // renderKindSelect 重建自定义下拉的选项列表，并同步按钮文案/图标。
+  // 原生 <select> 的 <option> 无法渲染图片（浏览器硬限制），
+  // 所以这里用 button + ul 自绘：每个选项 = 图标 + 文案，点击即选中。
+  function renderKindSelect() {
+    var menu = $("engine-kind-menu");
+    if (!menu) { return; }
+    menu.textContent = "";
     state.kinds.forEach(function (k) {
-      sel.appendChild(h("option", { value: k.kind, text: label(k, "label", "labelEn") || k.kind }));
+      var item = h("li", {
+        class: "kind-item" + (k.kind === state.editingKind ? " is-active" : ""),
+        role: "option",
+        "aria-selected": k.kind === state.editingKind ? "true" : "false"
+      }, [
+        S.engineIcon(k, kindLabel(k)),
+        h("span", { class: "kind-item-label", text: kindLabel(k) })
+      ]);
+      item.addEventListener("click", function () { selectKind(k.kind); });
+      menu.appendChild(item);
     });
+    updateKindButton();
+    updateKindIcon();
   }
 
   function renderKindDesc() {
     var k = state.kindMap[state.editingKind];
     txt("engine-kind-desc", k ? label(k, "description", "descriptionEn") : "");
+  }
+
+  // selectKind 是「选类型」的唯一入口：点下拉选项走这里。
+  // 编辑已有引擎时 kindLocked=true，任何来源的切换都被挡在门外。
+  function selectKind(kind) {
+    if (state.kindLocked) { closeKindMenu(); return; }
+    if (kind === state.editingKind) { closeKindMenu(); return; }
+    state.editingKind = kind;
+    state.secretTouched = false;
+    syncNameToKind(kind);
+    renderKindDesc();
+    renderFields();
+    clearFormError();
+    updateKindButton();
+    updateKindIcon();
+    closeKindMenu();
+  }
+
+  function updateKindButton() {
+    var lbl = $("engine-kind-btn-label");
+    if (lbl) { lbl.textContent = kindLabel(state.kindMap[state.editingKind] || {}) || "—"; }
+    var btn = $("engine-kind-btn");
+    if (btn) { btn.disabled = state.kindLocked; }
+  }
+
+  function updateKindIcon() {
+    var box = $("engine-kind-btn-icon");
+    if (!box) { return; }
+    box.textContent = "";
+    var k = state.kindMap[state.editingKind];
+    if (k) { box.appendChild(S.engineIcon(k, kindLabel(k))); }
+  }
+
+  function openKindMenu() {
+    if (state.kindLocked) { return; }
+    var menu = $("engine-kind-menu");
+    if (menu) { menu.hidden = false; }
+    state.kindMenuOpen = true;
+    var btn = $("engine-kind-btn");
+    if (btn) { btn.setAttribute("aria-expanded", "true"); }
+  }
+
+  function closeKindMenu() {
+    var menu = $("engine-kind-menu");
+    if (menu) { menu.hidden = true; }
+    state.kindMenuOpen = false;
+    var btn = $("engine-kind-btn");
+    if (btn) { btn.setAttribute("aria-expanded", "false"); }
   }
 
   // renderFields 按 schema 动态渲染表单字段。
@@ -889,14 +994,19 @@
       if (state.editing) { actDelete(state.editing); closeEditor(); }
     });
 
-    on("engine-kind", "change", function () {
-      state.editingKind = val("engine-kind");
-      state.secretTouched = false;
-      // 切换类型时同步默认名（仅当用户没手动改过名称）
-      syncNameToKind(state.editingKind);
-      renderKindDesc();
-      renderFields();
-      clearFormError();
+    // 类型选择已从原生 <select> 换成自定义下拉：
+    // 点击按钮开合菜单，点击选项走 selectKind()（逻辑在渲染区定义）。
+    click("engine-kind-btn", function () {
+      if (state.kindMenuOpen) { closeKindMenu(); } else { openKindMenu(); }
+    });
+    // 点击下拉以外的区域自动收起
+    document.addEventListener("click", function (ev) {
+      var sel = $("engine-kind");
+      if (sel && !sel.contains(ev.target)) { closeKindMenu(); }
+    });
+    // 按 Esc 收起
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") { closeKindMenu(); }
     });
 
     // 名称框：用户一旦手动输入就标记为「已定名」，之后切类型不再覆盖。

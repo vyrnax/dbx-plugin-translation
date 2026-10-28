@@ -9,7 +9,9 @@ import "github.com/vyrnax/translation/engine"
 // 这正是这个引擎的价值 —— 复用已有的 CLI 登录态。
 func schema() engine.Schema {
 	return engine.Schema{
+
 		Kind:          Kind,
+		Icon:          "localcli.svg",
 		Label:         "本地 CLI 代理",
 		LabelEn:       "Local CLI proxy",
 		DefaultName:   "本地 CLI 翻译",

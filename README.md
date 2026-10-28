@@ -338,7 +338,9 @@ node _release.mjs          # 本地会自动加 --allow-unverified，产物不�
 # 3) 提交并打 tag（tag 名必须是 v + manifest.version）
 git add -A && git commit -m "..."
 git push origin main
-git tag v0.2.2 && git push origin v0.2.2
+# tag 名必须等于 v + 当前 manifest.version（下面用 shell 现场取，避免升版后照抄到旧版本号）
+VER=$(node -p "require('./manifest.json').version")
+git tag "v$VER" && git push origin "v$VER"
 ```
 
 tag 一推，`.github/workflows/release.yml` 就会：

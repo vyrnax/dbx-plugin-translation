@@ -5,7 +5,9 @@ import "github.com/vyrnax/translation/engine"
 // schema 返回腾讯云翻译的配置表单描述。
 func schema() engine.Schema {
 	return engine.Schema{
+
 		Kind:          Kind,
+		Icon:          "tencent.svg",
 		Label:         "腾讯云翻译",
 		LabelEn:       "Tencent Cloud TMT",
 		DefaultName:   "腾讯云翻译",

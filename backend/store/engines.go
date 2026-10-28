@@ -7,7 +7,11 @@ import (
 	"strings"
 )
 
-// ListEngines 返回全部引擎，按 ord 升序、创建时间升序排列。
+// ListEngines 返回全部引擎：默认引擎永远置顶，其余按 ord 升序、创建时间升序排列。
+//
+// 「默认置顶」是产品硬性要求：翻译页的引擎下拉顺序必须与引擎列表完全一致，
+// 且默认引擎必须排在第一个。否则用户改了默认引擎后，下拉列表仍把旧引擎排在前面，
+// 「记住上次选择」的恢复逻辑也会和用户看到的顺序打架。
 //
 // 【刻意不 JOIN secrets 表】：列表查询根本不需要密文，
 // 不碰它就从根本上杜绝了「不小心把密钥查出来」的可能。
@@ -17,7 +21,7 @@ func (s *Store) ListEngines() ([]Engine, error) {
 		SELECT id, name, kind, config_json, has_secret, fingerprint,
 		       is_default, enabled, ord, created_at, updated_at
 		FROM engines
-		ORDER BY ord ASC, created_at ASC, rowid ASC`)
+		ORDER BY is_default DESC, ord ASC, created_at ASC, rowid ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("查询引擎列表失败: %w", err)
 	}
