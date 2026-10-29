@@ -157,6 +157,10 @@ var openaiMap = buildLLMMap()
 // localcliMap 与 openai 同理：本地 CLI 背后也是大模型。
 var localcliMap = buildLLMMap()
 
+// freeMap 同理：内置免费引擎背后也是大模型（B站 Index-Translate），
+// 语言靠 Prompt 里的自然语言名表达，不需要私有码表。
+var freeMap = buildLLMMap()
+
 // deeplMap 是 DeepL 的映射。DeepL 用大写码，且英语/葡萄牙语必须带地区后缀。
 //
 // 注意 DeepL 的 auto 只在【源语言】位置有效（target_lang 不接受 auto），
@@ -409,6 +413,7 @@ var sourceOverrides = map[string]map[string]string{
 var maps = map[string]map[string]string{
 	"openai":   openaiMap,
 	"localcli": localcliMap,
+	"free":     freeMap,
 	"deepl":    deeplMap,
 	"google":   googleMap,
 	"baidu":    baiduMap,
@@ -524,7 +529,7 @@ func SupportedTargetLangs(kind string) []string {
 func KnownKinds() []string {
 	// 顺序即 UI 里引擎类型下拉框的展示顺序：
 	// 大模型类在前（覆盖面最广、能力最强），传统机翻按国内使用广度排列。
-	order := []string{"openai", "localcli", "deepl", "google", "baidu", "youdao", "aliyun", "tencent"}
+	order := []string{"openai", "localcli", "free", "deepl", "google", "baidu", "youdao", "aliyun", "tencent"}
 	out := make([]string, 0, len(order))
 	for _, k := range order {
 		if _, ok := maps[k]; ok {

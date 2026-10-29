@@ -120,6 +120,16 @@ type Schema struct {
 	NeedsSecret bool `json:"needsSecret"`
 	// SecretLabel 是密钥字段的显示名（各引擎叫法不同：API Key / Secret Key / App Secret）
 	SecretLabel string `json:"secretLabel,omitempty"`
+	// Builtin 标记「内置引擎」：插件安装即存在，用户不可新增 / 改名 / 改配置 / 删除，
+	// 只能启用禁用与设默认。前端据此隐藏「编辑 / 删除」按钮，
+	// 并从「添加引擎」的类型下拉里排除该类型 —— 通用渲染器按这个标记判断，
+	// 所以内置引擎不需要前端写任何特例代码。
+	Builtin bool `json:"builtin,omitempty"`
+	// NoThrottle 表示上游没有 QPS/配额限制，分段之间不必等待。
+	//
+	// 全局偏好 chunkDelayMs（默认 1100ms）是为百度/有道免费档的 1 QPS 设计的；
+	// 对实测无限流的引擎（内置免费服务）沿用它，只会把长文翻译白白拖慢几秒。
+	NoThrottle bool `json:"noThrottle,omitempty"`
 }
 
 // 以下字段构造器一律【导出】：各引擎子包（engine/openai、engine/deepl …）

@@ -504,6 +504,16 @@
     return e ? e.kind : "";
   }
 
+  // engineName 返回引擎的显示名，内置引擎会换成随界面语言的类型名。
+  //
+  // 实现优先走 engines.js 的 E.displayName（那里有完整的 kindMap），
+  // 取不到时退回记录里的名字 —— 降级模式下（侧车不可用）也必须能显示。
+  function engineName(e) {
+    if (!e) { return ""; }
+    if (E && E.displayName) { return E.displayName(e); }
+    return e.name || e.kind || "";
+  }
+
   function currentEngine() {
     if (state.currentEngineId && E) {
       var found = E.findById(state.currentEngineId);
@@ -539,8 +549,8 @@
         role: "option",
         "aria-selected": active ? "true" : "false"
       }, [
-        S.engineIcon(engineKindInfo(e), e.name || e.kind),
-        h("span", { class: "kind-item-label", text: e.name || e.kind }),
+        S.engineIcon(engineKindInfo(e), engineName(e)),
+        h("span", { class: "kind-item-label", text: engineName(e) }),
         e.isDefault ? h("span", { class: "badge primary", text: t("defaultBadge") }) : null
       ]);
       item.addEventListener("click", function () { selectEngine(e.id); });
@@ -550,7 +560,9 @@
     // 选中项恢复顺序：
     //   1) state.currentEngineId —— 本次会话里用户的选择（含刚发生的变化）
     //   2) state.prefs.currentEngineId —— 跨会话记住的最后选择
-    //   3) 默认引擎（有序列表第一项）
+    //   3) 默认引擎 —— 按 isDefault 标记找，【不是】列表第一项：
+    //      列表顺序只由用户拖动决定，默认引擎可能排在任何位置
+    //      （defaultEngineId 找不到显式默认时才退回首项）。
     var wanted = state.currentEngineId || state.prefs.currentEngineId || "";
     if (!list.some(function (x) { return x.id === wanted; })) { wanted = defaultEngineId(list); }
     state.currentEngineId = wanted;
@@ -559,13 +571,48 @@
     updateNoEngineState();
   }
 
-  // orderedEngineList 返回【默认引擎永远第一】的启用引擎列表。
-  // 后端 ListEngines 已按 is_default DESC 排，这里再排一次是双保险：
+  /* ============ 内置免费引擎的使用提示 ============ */
+
+  // updateFreeNotice 控制翻译页那条免费服务提示。
+  //
+  // 为什么【不是常驻】也【不是每次弹框】：
+  //  - 常驻警告会让用户把它当装饰忽略（banner blindness），
+  //    而真正把 skipTlsVerify / 密钥降级这类红色警告淹在噪音里更危险；
+  //  - 每次选免费引擎都弹一个模态框是打断式体验，用户会烦。
+  // 所以规则是：只在「当前引擎是内置免费服务」时出现在原位，
+  // 用户点「不再提示」就把选择写进偏好，跨会话记住；
+  // 切到别的引擎自动隐藏，切回来时若没关过会再次出现。
+  // 放在「管理」按钮与「输入即译」之间：它既要指向配置入口，
+  // 又紧邻用户正在使用的开关，位置本身就在说明「这是关于当前引擎的」。
+  function updateFreeNotice() {
+    var box = $("free-notice");
+    if (!box) { return; }
+    var e = currentEngine();
+    var hidden = state.prefs && state.prefs.freeNoticeHidden === true;
+    box.hidden = !(!!(e && e.builtin) && !hidden);
+  }
+
+  // hideFreeNotice 记住「不再提示」。写偏好失败也照常隐藏：
+  // 这条信息不该因为落盘问题反复骚扰用户（下次启动最多再出现一次）。
+  function hideFreeNotice() {
+    state.prefs = state.prefs || {};
+    state.prefs.freeNoticeHidden = true;
+    updateFreeNotice();
+    if (S && S.setPrefs) {
+      S.setPrefs({ freeNoticeHidden: true }).catch(function () { /* 忽略 */ });
+    }
+  }
+
+  // orderedEngineList 返回【按用户拖动顺序排列】的启用引擎列表 ——
+  // 与「引擎」页看到的顺序完全一致（用户明确要求两处顺序必须相同）。
+  //
+  // 只按 ord，【不按 isDefault】：设为默认不该把引擎插队到第一位，
+  // 顺序的唯一来源是用户在引擎列表里的拖动。
+  // 后端 ListEngines 已按 ord 排，这里再排一次是双保险：
   // 降级模式（内存后端）不走 SQL，顺序只由这份前端逻辑保证。
   function orderedEngineList() {
     var list = (E && E.enabledEngines) ? E.enabledEngines() : [];
     return list.slice().sort(function (a, b) {
-      if (a.isDefault !== b.isDefault) { return a.isDefault ? -1 : 1; }
       return (a.ord || 0) - (b.ord || 0);
     });
   }
@@ -579,13 +626,16 @@
     var lbl = $("sel-engine-btn-label");
     var box = $("sel-engine-btn-icon");
     var e = currentEngine();
-    if (lbl) { lbl.textContent = e ? (e.name || e.kind) : (state.engineList.length ? "—" : "（无可用引擎）"); }
+    if (lbl) { lbl.textContent = e ? engineName(e) : (state.engineList.length ? "—" : t("noEngine")); }
     if (box) {
       box.textContent = "";
-      if (e) { box.appendChild(S.engineIcon(engineKindInfo(e), e.name || e.kind)); }
+      if (e) { box.appendChild(S.engineIcon(engineKindInfo(e), engineName(e))); }
     }
     var btn = $("sel-engine-btn");
     if (btn) { btn.setAttribute("aria-expanded", state.engineMenuOpen ? "true" : "false"); }
+    // 提示条跟着「当前引擎」走，而 updateEngineButton 是所有变化的汇聚点，
+    // 挂在这里就不会出现「换了引擎但提示没更新」这种漏网路径。
+    updateFreeNotice();
   }
 
   // selectEngine 是「换引擎」的唯一入口：写状态 + 持久化 + 刷新界面。
@@ -603,7 +653,12 @@
 
   function openEngineMenu() {
     var m = $("sel-engine-menu");
-    if (m) { m.hidden = false; }
+    var anchor = $("sel-engine");
+    if (m) {
+      m.hidden = false;
+      // 取消隐藏之后才能量到最长选项的宽度，顺序不能反
+      if (S && S.fitDropdownMenu) { S.fitDropdownMenu(m, anchor); }
+    }
     state.engineMenuOpen = true;
     updateEngineButton();
   }
@@ -639,9 +694,9 @@
     var e = currentEngine();
     if (!e) { box.appendChild(document.createTextNode("\u2014")); return; }
     var kindInfo = (typeof E !== "undefined" && E && E.kindInfo) ? (E.kindInfo(e.kind) || {}) : {};
-    box.appendChild(S.engineIcon(kindInfo, e.name));
+    box.appendChild(S.engineIcon(kindInfo, engineName(e)));
     var name = document.createElement("span");
-    name.textContent = e.name;
+    name.textContent = engineName(e);
     box.appendChild(name);
   }
 
@@ -1235,6 +1290,8 @@
       state.targetLang = val("sel-target-lang");
     });
     // 引擎下拉已从原生 <select> 换成自绘下拉：按钮开合，选项走 selectEngine()
+    click("btn-free-notice-go", function () { switchView("engines"); });
+    click("btn-free-notice-close", hideFreeNotice);
     click("sel-engine-btn", function () {
       if (state.engineMenuOpen) { closeEngineMenu(); } else { openEngineMenu(); }
     });
@@ -1568,9 +1625,10 @@
     state.enginesSeen = true;
     var curSig = engineOrderSig(state.engines);
 
-    // 只要【列表顺序】或【默认引擎】变了，就重置翻译页的引擎选择，
-    // 让下拉框重新以「默认第一」呈现。第一次加载不算变化（prev 是空），
-    // 否则启动时会把跨会话记住的选择清掉。
+    // 【列表顺序】或【默认引擎】变了，就把翻译页选中的引擎重置为默认引擎。
+    // 注意重置的是「选中哪一台」，不是「谁排在第一位」——
+    // 下拉的排列顺序始终等于引擎列表里用户自己拖出来的顺序。
+    // 第一次加载不算变化（prev 是空），否则启动时会把跨会话记住的选择清掉。
     if (!first && prevSig !== curSig) {
       state.currentEngineId = "";
       persistEngineSelection("");
@@ -1581,6 +1639,9 @@
   }
 
   // engineOrderSig 计算「顺序 + 默认引擎」的签名：两者之一变了签名就变。
+  //
+  // 顺序部分只关心 id 的排列（= 用户拖出来的 ord），
+  // 默认部分单独编码：设默认会重置「选中哪台」，但不会改变排列。
   function engineOrderSig(list) {
     var ids = list.map(function (e) { return e.id; }).join("|");
     var def = list.filter(function (e) { return e.isDefault; }).map(function (e) { return e.id; }).join(",");

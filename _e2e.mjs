@@ -249,6 +249,21 @@ async function main() {
         k.defaultName !== k.kind, String(k.defaultName));
     }
 
+    // 内置免费引擎的契约：前端「隐藏编辑/删除」「排除出类型下拉」「不吃段间延时」
+    // 全部依赖这些字段，少一个就是一个静默的 UI 缺陷。
+    const freek = kinds.find((k) => k.kind === "free") || {};
+    check("内置引擎已注册进 schema", freek.kind === "free");
+    check("内置引擎 builtin=true", freek.builtin === true);
+    check("内置引擎 noThrottle=true（不该吃 1100ms 段间延时）", freek.noThrottle === true);
+    check("内置引擎 needsSecret=false（没有可填字段，不该要求密钥）", freek.needsSecret === false);
+    check("内置引擎零配置字段", Array.isArray(freek.fields) && freek.fields.length === 0,
+      String((freek.fields || []).length));
+    check("内置引擎单段上限 400（服务端 30 秒网关硬超时）", freek.maxChars === 400,
+      String(freek.maxChars));
+    check("内置引擎声明了图标", freek.icon === "default.svg", String(freek.icon));
+    check("内置引擎语言表非空", (freek.languages || []).length > 0,
+      String((freek.languages || []).length));
+
     // 传统机翻引擎都不支持流式，LLM 类支持 —— 前端据此决定是否显示流式光标
     check("openai 支持流式而传统机翻不支持",
       kinds.find((k) => k.kind === "openai")?.streaming === true &&
@@ -287,13 +302,61 @@ async function main() {
     const idList = send(proc, "engines/list", {});
     await waitFor(() => replies.has(idList), 10000, "list 响应");
     const listRes = replies.get(idList).result;
-    check("list 返回 1 个引擎", (listRes?.engines || []).length === 1);
-    const listed = (listRes?.engines || [])[0] || {};
+    // 引擎列表从安装起就含【内置免费引擎】一条，所以总数是 2。
+    // 这一条钉住：内置引擎不会挤掉用户首个引擎的默认位
+    //（曾经是真 bug：自动设默认时只置位不清别人，列表里出现两个默认引擎）。
+    // 顺序本身【不由默认决定】，另有专门的「设默认不改变顺序」断言在后面。
+    const engines = listRes?.engines || [];
+    check("list 返回 2 个引擎（用户引擎 + 内置引擎）", engines.length === 2,
+      engines.map((e) => e.kind + (e.builtin ? "(内置)" : "")).join(","));
+    const listed = engines.find((e) => e.id === engineId) || {};
     check("首个引擎自动成为默认", listed.isDefault === true);
     check("首个引擎自动启用", listed.enabled === true);
     check("hasSecret = true", listed.hasSecret === true);
     check("list 返回值不含密钥明文", !JSON.stringify(listRes).includes(FAKE_KEY));
     check("list 里有 fingerprint 而非明文", !!listed.fingerprint);
+
+    const builtinEng = engines.find((e) => e.builtin === true) || {};
+    check("内置引擎存在于列表且 kind=free", builtinEng.kind === "free",
+      JSON.stringify({ id: builtinEng.id, kind: builtinEng.kind }));
+    check("内置引擎默认启用", builtinEng.enabled === true);
+    check("内置引擎没有密钥", builtinEng.hasSecret !== true);
+    check("内置引擎端点仍是内置常量（前端塞不进去）",
+      builtinEng.config?.endpoint === "https://index-translate.bilibili.com/v1/chat/completions",
+      String(builtinEng.config?.endpoint));
+
+    // 内置引擎不可删除：前端不显示按钮只是体验，这里才是真防线。
+    const idDelB = send(proc, "engines/delete", { id: builtinEng.id });
+    await waitFor(() => replies.has(idDelB), 10000, "删除内置引擎响应");
+    const delB = replies.get(idDelB);
+    check("删除内置引擎被拒绝且文案给出替代方案",
+      !!delB.error && delB.error.code === -32602 && /内置|禁用/.test(delB.error.message || ""),
+      JSON.stringify(delB.error || delB.result));
+
+    // 契约核心：顺序只由用户拖动（ord）决定，「设为默认」【不插队】。
+    // 曾经排序写成 ORDER BY is_default DESC，点一下默认就跑到第一位，
+    // 而翻译页下拉又必须与列表同序，于是这一个动作连带改掉两处排列。
+    const orderBefore = engines.map((e) => e.id).join(",");
+    const idSd = send(proc, "engines/setDefault", { id: builtinEng.id });
+    await waitFor(() => replies.has(idSd), 10000, "setDefault 响应");
+    const idList3 = send(proc, "engines/list", {});
+    await waitFor(() => replies.has(idList3), 10000, "list 三次响应");
+    const engines3 = replies.get(idList3).result?.engines || [];
+    check("设为默认不改变展示顺序", engines3.map((e) => e.id).join(",") === orderBefore,
+      orderBefore + " → " + engines3.map((e) => e.id).join(","));
+    check("默认标记确实切过去了",
+      engines3.some((e) => e.id === builtinEng.id && e.isDefault === true));
+
+    // 把默认切回用户引擎：后面的翻译步骤必须继续走假上游端点，
+    // 不能让默认引擎变成内置免费服务 —— 那会让 CI 依赖真实公网。
+    const idSd2 = send(proc, "engines/setDefault", { id: engineId });
+    await waitFor(() => replies.has(idSd2), 10000, "setDefault 复原响应");
+    const idList4 = send(proc, "engines/list", {});
+    await waitFor(() => replies.has(idList4), 10000, "list 四次响应");
+    const engines4 = replies.get(idList4).result?.engines || [];
+    check("默认切回后顺序依然不变（两次设默认都没动过位置）",
+      engines4.map((e) => e.id).join(",") === orderBefore,
+      engines4.map((e) => e.id).join(","));
 
     const idGet = send(proc, "engines/get", { id: engineId });
     await waitFor(() => replies.has(idGet), 10000, "get 响应");
@@ -464,6 +527,18 @@ async function main() {
     await waitFor(() => replies.has(idBadLang), 10000, "bad lang 响应");
     check("目标语言为 auto 被拒绝", !!replies.get(idBadLang).error,
       JSON.stringify(replies.get(idBadLang).error || replies.get(idBadLang).result));
+
+    // 引擎名称的显示宽度上限（汉字按 2 单位）。输入框的 maxlength 与前端实时截断只是体验，
+    // 这道后端校验才是真正挡住的那一步 —— 手工 RPC 与旧备份导入都不经过输入框。
+    const idLongName = send(proc, "engines/save", {
+      kind: "openai", name: "很长的引擎名称".repeat(5),
+      config: { endpoint: "https://api.example.com/v1", model: "m" },
+      secrets: { apiKey: FAKE_KEY },
+    });
+    await waitFor(() => replies.has(idLongName), 10000, "超长名称响应");
+    check("超长引擎名称被拒绝（-32602）",
+      replies.get(idLongName).error?.code === -32602,
+      JSON.stringify(replies.get(idLongName).error || replies.get(idLongName).result));
     const idUnk = send(proc, "no/such-method", {});
     await waitFor(() => replies.has(idUnk), 10000, "unknown method 响应");
     check("未知方法返回 -32601", replies.get(idUnk).error?.code === -32601,

@@ -61,6 +61,9 @@ import (
 	"github.com/vyrnax/translation/chunk"
 	dbxpluginsdk "github.com/vyrnax/translation/dbxsdk"
 	"github.com/vyrnax/translation/engine"
+	// free 是【具名】导入而不是空白导入：内置引擎除了靠 init() 注册进工厂，
+	// main 还需要它的 Kind / NameZh / SeedConfig 来初始化存储层里的内置记录。
+	"github.com/vyrnax/translation/engine/free"
 	// 引擎注册：每个子包在 init() 里调用 engine.Register，
 	// 这里用空白导入触发。新增引擎 = 新增一个子包 + 这里加一行，
 	// 前端零改动（表单由 translate/schema 动态渲染）。
@@ -89,7 +92,7 @@ import (
 // 运行时反读保证了「包里的 manifest 说什么版本，侧车就自报什么版本」。
 const (
 	pluginID      = "com.vyrnax.translation"
-	pluginVersion = "0.2.3"
+	pluginVersion = "0.2.4"
 )
 
 // 全局在飞翻译任务上限。
@@ -99,6 +102,57 @@ const (
 // 但取消是异步的（要等上游响应），极端情况下可能堆积。
 // 4 是一个平衡值：够用户同时翻译几段文本，又不会让上游配额被瞬间打爆。
 const maxInflightTasks = 4
+
+// maxEngineNameUnits 是引擎名称的显示宽度上限：全角字符计 2 个单位、半角计 1 个单位，
+// 所以 32 单位约等于「16 个汉字」或「32 个字母」，或二者任意混合。
+//
+// 为什么必须有上限：名称同时出现在三处窄位置 —— 翻译页的引擎下拉、引擎列表行、历史列表。
+// 没有上限时用户可以起一个几十字的名称，把下拉撑成多行、把行首图标与右侧按钮挤走，
+// 界面变形且他自己也认不出哪台是哪台。
+//
+// 为什么按【显示宽度】而不是字符数：界面上受限的本质是「占多少地方」。
+// 同样 16 个字符，「阿里云翻译（生产备用）」的宽度约是 16 个 ASCII 字母的两倍，
+// 按统一字符数计就会让中文名称更容易撑破下拉框。
+//
+// 有了硬上限，前端就不需要「省略号 + 鼠标悬浮看全称」那套补救 —— 名称必然放得下。
+// CSS 里仍保留 nowrap + ellipsis 作为最后一道保险，只在宿主把 UI 字体调得很大时才可能触发；
+// 那时宁可截断也绝不换行，因为换行会把整排选项的行高撑开，比截断难看得多。
+const maxEngineNameUnits = 32
+
+// isWideRune 判断字符是否占两个显示宽度（CJK / 全角标点 / 假名 / 韩文音节等）。
+//
+// 区间表与 ui/storage.js 的 isWideChar 一一对应 —— 两处必须同一规则，
+// 否则前端放过的名称会被后端拒绝，用户看到的是「明明没超长却保存失败」。
+func isWideRune(r rune) bool {
+	switch {
+	case r >= 0x1100 && r <= 0x115F, // 韩文字母 Jamo
+		r >= 0x2E80 && r <= 0x303E, // CJK 部首与标点（含（）、，。～）
+		r >= 0x3041 && r <= 0x33FF, // 假名、注音、CJK 兼容符号
+		r >= 0x3400 && r <= 0x4DBF, // CJK 扩展 A
+		r >= 0x4E00 && r <= 0x9FFF, // CJK 基本汉字
+		r >= 0xA000 && r <= 0xA4CF, // 彝文
+		r >= 0xAC00 && r <= 0xD7A3, // 韩文音节
+		r >= 0xF900 && r <= 0xFAFF, // CJK 兼容表意文字
+		r >= 0xFE30 && r <= 0xFE6F, // CJK 兼容形式与小写形式
+		r >= 0xFF00 && r <= 0xFF60, // 全角 ASCII 与全角标点
+		r >= 0xFFE0 && r <= 0xFFE6: // 全角货币与符号
+		return true
+	}
+	return false
+}
+
+// nameWidthUnits 返回字符串占用的显示宽度单位数。
+func nameWidthUnits(s string) int {
+	units := 0
+	for _, r := range s {
+		if isWideRune(r) {
+			units += 2
+		} else {
+			units++
+		}
+	}
+	return units
+}
 
 // translateTestTimeoutSecs 是连通性探测的超时。
 //
@@ -122,6 +176,10 @@ type plugin struct {
 
 	// semaphores 是每引擎的并发信号量，尊重上游 QPS 限制。
 	semaphores map[string]chan struct{}
+
+	// builtinTpl 是内置引擎的定义模板，启动时由 EnsureBuiltin 写库，
+	// data/import 之后要用它再兜一次底（导入的旧备份里可能没有这条记录）。
+	builtinTpl store.Engine
 }
 
 // task 是一个在飞的流式翻译任务。
@@ -559,7 +617,11 @@ func (p *plugin) handleSchema() (any, *RPCError) {
 			"maxChars":      s.MaxChars,
 			"needsSecret":   s.NeedsSecret,
 			"secretLabel":   s.SecretLabel,
-			"fields":        s.Fields,
+			// builtin=true 的类型：前端要从「添加引擎」的类型下拉里排除它，
+			// 并对它的列表行隐藏「编辑 / 删除」。
+			"builtin":    s.Builtin,
+			"noThrottle": s.NoThrottle,
+			"fields":     s.Fields,
 			// 该引擎支持的语言：前端据此禁用下拉框里不支持的选项，
 			// 而不是等用户选了之后翻译失败。
 			"languages":       lang.SupportedLangs(s.Kind),
@@ -592,6 +654,7 @@ func engineToJSON(e store.Engine) map[string]any {
 		"isDefault":   e.IsDefault,
 		"enabled":     e.Enabled,
 		"ord":         e.Ord,
+		"builtin":     e.Builtin,
 		"createdAt":   e.CreatedAt,
 		"updatedAt":   e.UpdatedAt,
 	}
@@ -672,6 +735,14 @@ func (p *plugin) handleEnginesSave(values map[string]any) (any, *RPCError) {
 	name := strings.TrimSpace(strArg(values, "name", ""))
 	if name == "" {
 		name = defaultEngineName(kind)
+	}
+	// 长度校验必须落在后端：输入框的 maxlength 与前端实时截断都拦不住手工构造的 RPC，
+	// 也拦不住 data/import 恢复来的旧备份。
+	// 内置引擎由存储层直接播种、不经过本函数，因此不受这条校验影响。
+	if u := nameWidthUnits(name); u > maxEngineNameUnits {
+		return nil, badParams(
+			"引擎名称过长（占 %d 个宽度单位，最多 %d 个：约 16 个汉字或 32 个字母）。请缩短名称。",
+			u, maxEngineNameUnits)
 	}
 
 	config := map[string]any{}
@@ -952,7 +1023,29 @@ func (p *plugin) mapStoreErr(err error) (any, *RPCError) {
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, dbxpluginsdk.NewError(-32602, "记录不存在或已被删除")
 	}
+	if errors.Is(err, store.ErrBuiltin) {
+		// 不说「不可删除」三个字就完事：必须给出下一步能做什么，
+		// 否则用户会以为插件坏了。禁用是内置引擎唯一支持的「不用它」的方式。
+		return nil, dbxpluginsdk.NewError(-32602,
+			"「免费翻译服务」是内置引擎，不可删除。如果不想用它，可以在引擎列表里把它禁用。")
+	}
 	return nil, failed(-32002, err)
+}
+
+// effectiveChunkDelay 决定分段之间是否等待。
+//
+// 全局偏好 chunkDelayMs（默认 1100ms）的存在理由只有一个：百度/有道免费档是 1 QPS。
+// 把它套到实测无限流的引擎上（内置免费服务：并发 100 全成功、30 秒内 206 次请求零失败），
+// 后果是长文分段翻译白白多等 N×1.1 秒 —— 而该引擎单段上限只有 400 字符，
+// 分段数天然比别人多，被拖累得也最重。
+//
+// 判据来自引擎自己声明的 Schema.NoThrottle，不在这里硬编码 kind 名：
+// 以后再加无限流的引擎，改它的 schema 就够了（见 AGENTS.md「schema 单一事实来源在侧车」）。
+func (p *plugin) effectiveChunkDelay(kind string, prefsDelay int) int {
+	if _, sch, ok := engine.Lookup(kind); ok && sch.NoThrottle {
+		return 0
+	}
+	return prefsDelay
 }
 
 // ---------------------------------------------------------------------------
@@ -1274,6 +1367,8 @@ func (p *plugin) handleTranslateRun(values map[string]any) (any, *RPCError) {
 	prefs, _ := p.store.GetPrefs()
 	timeoutSecs := engine.ConfigInt(engine.Config(rec.Config), "timeoutSecs", defaultTranslateTimeoutSecs, 5, 600)
 	chunkDelay := intArg(prefs, "chunkDelayMs", 1100, 0, 10000)
+	// 内置免费服务这类上游无限流的引擎不沿用段间延时（见 Schema.NoThrottle）。
+	chunkDelay = p.effectiveChunkDelay(e.Kind(), chunkDelay)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSecs)*time.Second)
 	defer cancel()
@@ -1575,6 +1670,8 @@ func (p *plugin) handleTranslateStart(values map[string]any, emitter *dbxplugins
 	prefs, _ := p.store.GetPrefs()
 	timeoutSecs := engine.ConfigInt(engine.Config(rec.Config), "timeoutSecs", defaultTranslateTimeoutSecs, 5, 600)
 	chunkDelay := intArg(prefs, "chunkDelayMs", 1100, 0, 10000)
+	// 内置免费服务这类上游无限流的引擎不沿用段间延时（见 Schema.NoThrottle）。
+	chunkDelay = p.effectiveChunkDelay(e.Kind(), chunkDelay)
 	// 用户可关闭流式（例如宿主事件转发有问题时的降级开关）
 	wantStream := boolArg(values, "stream", true) && boolArg(prefs, "streamEnabled", true)
 
@@ -2005,6 +2102,12 @@ func (p *plugin) handleDataImport(values map[string]any) (any, *RPCError) {
 		}
 		existing, _ := p.store.ListEngines()
 		for _, e := range existing {
+			if e.Builtin {
+				// 内置引擎不参与「清空」：它不属于用户数据，而是插件自带能力。
+				// 放过它还有一个实际好处 —— 否则每次 replace 导入都会撞上一次
+				// ErrBuiltin，往日志里写一条看着像故障的「删除旧引擎失败」。
+				continue
+			}
 			if _, err := p.store.DeleteEngine(e.ID, -1); err != nil {
 				trace.Log("data/import: 删除旧引擎 %s 失败: %v", e.ID, err)
 			}
@@ -2040,6 +2143,14 @@ func (p *plugin) handleDataImport(values map[string]any) (any, *RPCError) {
 				continue
 			}
 			counts["secrets"]++
+		}
+	}
+
+	// 导入完再兜一次底：旧备份文件里可能根本没有内置引擎这条记录
+	//（它是在这个功能之前导出的），必须保证导入后依然开箱可用。
+	if p.builtinTpl.ID != "" {
+		if _, err := p.store.EnsureBuiltin(p.builtinTpl); err != nil {
+			trace.Log("data/import: 内置引擎兜底失败: %v", err)
 		}
 	}
 
@@ -2137,6 +2248,31 @@ func main() {
 		semaphores: map[string]chan struct{}{},
 	}
 	writeConfig(map[string]any{"dataDir": dir, "updatedAt": time.Now().Format(time.RFC3339)})
+
+	// 内置「免费翻译服务」：装好插件就存在、开箱可用，用户不可编辑删除，
+	// 只能启用/禁用与设默认。这样新用户第一次打开工作台就能翻译，
+	// 不必先跑一遍「申请 Key → 填端点 → 测试连通」。
+	//
+	// 为什么放在启动流程而不是 store.Open 里：
+	// store 是纯持久层，不该知道任何引擎 kind；而 main 已经把引擎包导进来了。
+	// 同理，单测里不会被这条记录干扰 —— 只有真实启动才会播种。
+	p.builtinTpl = store.Engine{
+		ID:      store.BuiltinEngineID,
+		Name:    free.NameZh,
+		Kind:    free.Kind,
+		Config:  free.SeedConfig(),
+		Enabled: true,
+		Builtin: true,
+	}
+	if st != nil {
+		created, err := st.EnsureBuiltin(p.builtinTpl)
+		if err != nil {
+			// 播种失败不影响其它引擎：记日志继续，用户仍可手动配置官方引擎。
+			trace.Log("内置引擎初始化失败（其它功能不受影响）: %v", err)
+		} else if created {
+			trace.Log("已初始化内置免费引擎 id=%s model=%s", p.builtinTpl.ID, free.Model)
+		}
+	}
 
 	meta := resolveMetadata()
 	trace.Log("上报身份: id=%s version=%s capabilities=%v", meta.ID, meta.Version, meta.Capabilities)

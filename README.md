@@ -1,6 +1,8 @@
 # Translation 即时翻译（DBX 插件）
 
-多引擎翻译插件，运行在 [DBX](https://dbxio.com) 宿主里。支持 **OpenAI 兼容大模型**（DeepSeek、通义千问、智谱、Kimi、Ollama、vLLM、LM Studio…）、**DeepL**、**百度**、**有道**、**阿里云**与**本地 CLI 代理**（claude / codex），含流式输出、输入即译、引擎管理与翻译历史。
+多引擎翻译插件，运行在 [DBX](https://dbxio.com) 宿主里。**装好就能直接翻译**：内置「免费翻译服务」引擎（B站公开部署的 Index-Translate 模型），无需注册、无需 API Key、无需任何配置。
+
+需要更稳定的服务时可自行添加引擎，共支持 **9 类**：**内置免费翻译服务**、**OpenAI 兼容大模型**（DeepSeek、通义千问、智谱、Kimi、Ollama、vLLM、LM Studio…）、**DeepL**、**Google**、**百度**、**有道**、**阿里云**、**腾讯云**与**本地 CLI 代理**（claude / codex），含流式输出、输入即译、引擎管理与翻译历史。
 
 API Key 由内置的 **Go 原生侧车**经系统密钥库（Windows DPAPI / macOS Keychain / Linux secret-tool）加密后落盘，前端全程接触不到明文。
 
@@ -53,7 +55,7 @@ dbx-plugin-translation/
 ├── PLAN.md                # 实施蓝图（功能/技术架构、详设、分阶段任务）
 ├── README.md              # 本文件
 ├── LICENSE                # Apache-2.0 全文（商店首次上架强制要求，缺失会被拒）
-├── RELEASE_NOTES.md       # 版本说明（CI 建 Release 时作为 body）
+├── RELEASE_NOTES.md       # 【只写当前版本】的变更说明，CI 建 Release 时作为 body；历史归档交给 GitHub Releases 与 git tag
 ├── manifest.json          # 插件清单（id / 版本 / entrypoints / contributions / 权限）
 ├── dbx-plugin.toml        # 打包配置（后端语言、二进制名、include）
 ├── .dbx-store.json        # 商店元数据（name/permissions 必须与 manifest 一致）
@@ -75,6 +77,7 @@ dbx-plugin-translation/
 │   ├── engine/            # Engine 接口、注册表、schema、HTTP 客户端、错误分类
 │   │   ├── openai/        # OpenAI 兼容（SSE 真流式）：DeepSeek/通义/智谱/Kimi/Ollama/vLLM…
 │   │   ├── localcli/      # 本地 CLI 代理（claude / codex / 自定义），参数数组直接 exec
+│   │   ├── free/          # 内置免费引擎（复用 openai 适配器 + 锁定配置，表单零字段）
 │   │   ├── deepl/         # DeepL REST（free/pro/自定义端点、formality、glossary）
 │   │   ├── google/        # Google Cloud Translation v2
 │   │   ├── baidu/         # 百度翻译（MD5 签名）
@@ -327,7 +330,8 @@ node _verify.mjs
 ```bash
 # 1) 改版本号（三处必须一致，_buildpkg.js 有闸门校验）
 #    manifest.json / backend/main.go 的 pluginVersion / ui/storage.js 的 UI_VERSION
-#    同时更新 RELEASE_NOTES.md 的标题与安装表格里的文件名
+#    RELEASE_NOTES.md 要【整体重写为当前版本的变更】，不要在旧内容后面追加
+#    （_buildpkg.js 有闸门：首行版本号必须等于 manifest.version，否则拒绝打包）
 
 # 2) 本地自检（产物仅用于自测）
 python _domcheck.py
@@ -381,8 +385,8 @@ tag 一推，`.github/workflows/release.yml` 就会：
 
 | 审核项 | 本插件的答复 |
 |---|---|
-| **网络访问** | Manifest 只声明 `host.events`，**未声明** `host.network:*`。但 `host.network` 白名单**不约束原生侧车** —— 侧车会直连用户在引擎配置中填写的**任意 HTTP/HTTPS 端点**（8 类引擎端点均可自定义）。侧车**不监听任何端口**。默认严格校验 TLS；`skipTlsVerify` 是按引擎的显式开关，开启时 UI 红色警示 |
-| **隐私** | 翻译原文会发往用户所选的第三方服务。原文与译文以**明文 SQLite**（`<插件数据目录>/translation.db`）落盘，**卸载后仍保留**，可在「历史」页随时清空。API Key **不以明文落盘**（系统密钥库加密，降级时 UI 常驻警示）；密钥不进日志/事件/错误消息/RPC 返回值；导出默认不含密钥 |
+| **网络访问** | Manifest 只声明 `host.events`，**未声明** `host.network:*`。但 `host.network` 白名单**不约束原生侧车** —— 侧车会直连用户在引擎配置中填写的**任意 HTTP/HTTPS 端点**（除内置引擎外，8 类可配引擎的端点均可自定义）。唯一不由用户填写的端点是内置免费引擎的 `https://index-translate.bilibili.com/v1/chat/completions`（HTTPS，选中该引擎时原文发往它）。侧车**不监听任何端口**。默认严格校验 TLS；`skipTlsVerify` 是按引擎的显式开关，开启时 UI 红色警示 |
+| **隐私** | 翻译原文会发往用户所选的第三方服务（含内置免费引擎的公益端点）。原文与译文以**明文 SQLite**（`<插件数据目录>/translation.db`）落盘，**卸载后仍保留**，可在「历史」页随时清空。API Key **不以明文落盘**（系统密钥库加密，降级时 UI 常驻警示）；密钥不进日志/事件/错误消息/RPC 返回值；导出默认不含密钥 |
 | **原生侧车行为** | 1 个 Go 可执行文件（无 cgo），由宿主按生命周期启停，仅 stdio 通信。只写插件数据目录内的 `translation.db`(+`-wal`/`-shm`)、`config.json`、`sidecar-trace.log`。**`localcli` 引擎会执行本机命令**（`claude`/`codex`/自定义），用 `exec.CommandContext` 的**参数数组**直接 exec、**不经 shell**，`extraArgs` 逐条拒绝 shell 元字符，进程受超时控制后 kill；凭据由该 CLI 自持，插件不接触 |
 | **代码签名** | 5 个 target 均为**未签名**候选（不含 `signature.json`）。`darwin` 侧车只有 Go 链接器附加的 **ad-hoc 签名，未做 Apple notarization**（需 Apple Developer 账号，暂无计划） |
 | **provenance** | 全部 target 由对应平台 runner **真机构建**，源码检出自公开 tag，Go 工具链 pin 到 `1.21.13`（go.mod 声明 go 1.21，且该版本已被 v0.2.1 那次 CI 实证可构建全部 5 个 target）。`go version -m` 可见 `vcs.revision` = tag commit、`vcs.modified=false` |
@@ -392,6 +396,102 @@ tag 一推，`.github/workflows/release.yml` 就会：
 
 ---
 
-## 8. 许可
+## 8. 用户手册（功能、安装、已知限制）
+
+### 8.1 核心特性
+
+**输入即译，流式输出** —— 在原文框打字，停顿后自动翻译，译文逐字出现。大模型引擎走 SSE 真流式，
+传统机翻引擎自动降级为整段返回，前端体验完全一致。内置竞态防护：快速连续输入时旧请求的迟到结果
+会被自动丢弃，不覆盖新译文；每次新输入前先取消上一个在飞任务，不浪费配额。
+
+**9 类翻译引擎**
+
+| 引擎 | 类型 | 流式 | 需要密钥 | 说明 |
+|---|---|---|---|---|
+| **免费翻译服务**（内置） | OpenAI 兼容 | ✅ | ❌ | 安装即存在、零配置，服务端为 B站公开部署的 Index-Translate 模型，国内直连。不可改名、不可删除，只能禁用或取消默认；公益端点不保证可用，翻译页有明确提示 |
+| 大模型翻译 | OpenAI 兼容 | ✅ | ✅ | 覆盖 DeepSeek、通义千问、智谱、Kimi/Moonshot、OpenAI、Ollama、vLLM、LM Studio 等一切实现 `/v1/chat/completions` 的服务 |
+| 本地 CLI 翻译 | 子进程代理 | ✅ | ❌ | 调用本机已登录的 `claude` / `codex`，复用现有登录态与订阅额度，无需申请 API Key |
+| DeepL | REST | — | ✅ | 免费档 / 付费档、语气正式度、术语表 |
+| Google 翻译 | REST | — | ✅ | Cloud Translation API v2 |
+| 百度翻译 | REST | — | ✅ | 通用文本翻译，MD5 签名 |
+| 有道翻译 | REST | — | ✅ | 有道智云，SHA256 签名 |
+| 阿里云翻译 | REST | — | ✅ | 机器翻译 TranslateGeneral，ACS3-HMAC-SHA256 签名 |
+| 腾讯云翻译 | REST | — | ✅ | TMT TextTranslate，TC3-HMAC-SHA256 签名 |
+
+除内置引擎外，端点地址均可自定义，方便走企业代理或自建网关。
+
+**内置免费引擎为什么存在** —— 此前的体验缺口是「装完必须先配好引擎才能用」，六个官方引擎都要申请凭据。
+2026-10 实测 88 个免密钥端点后，只有 B站 Index-Translate 同时满足「免费 + 零配置 + 国内直连 + 质量可用」
+（Google 系在国内是 TCP 层阻断，LibreTranslate / DeepLX / Lingva 公共实例已全面失效）。
+它是公益享用端点、无 SLA，且服务端网关有 30 秒硬超时，所以单段上限被压到 400 字符；
+选中它时翻译页会出现琥珀色提示与「去配置」入口，用户点过「不再提示」就写进偏好，不再重复打扰。
+
+**引擎管理** —— 选类型自动补全可读默认名（「阿里云翻译」「DeepL 翻译」），手动改过之后切类型不会覆盖你的命名；
+同类型可添加多个实例，靠名称区分。连通性测试返回耗时与可理解的中文错误（区分「Key 无效」「端点不可达」
+「配额用尽」「限流」）。支持设为默认、启用/禁用、拖拽排序、删除（连带清除密钥）。
+
+引擎名称有硬性长度上限（约 16 个汉字 / 32 个字母；全角字符按 2 个宽度单位计，上限 32 单位）：输入框实时限长，侧车 `engines/save` 再校验一次以挡住手工调用与旧备份导入。有了这个上限，下拉与列表里的名称必然放得下，不需要「省略号 + 悬浮看全称」的补救。
+
+**顺序与默认是两件独立的事** —— 列表顺序只由你按住行首把手拖动决定，「设为默认」只改标记、不插队；翻译页的引擎下拉与引擎列表始终同序。
+
+**31 种语言** —— `auto` 自动检测 + 30 种语言。语言下拉按当前引擎的能力**动态禁用**不支持的选项，
+而不是等你选完了翻译失败。
+
+**翻译历史** —— 分页、搜索（原文与译文）、收藏、单条/批量删除、一键用历史记录重新翻译。
+默认保留 500 条（可调 100–5000），超出时淘汰最旧记录，**收藏的永不淘汰**。
+
+**长文本自动分段** —— 超过引擎单次上限的文本按「段落 → 句子 → 子句 → 硬切」逐级降级切分，
+并保护代码块、URL、`{placeholder}` 占位符不被切断。分段顺序执行、段间可配延时（默认 1100ms），
+避免触发百度/有道免费档的 1 QPS 限制。
+
+**完全跟随 DBX 外观** —— 主题（明暗）、调色板、圆角、UI 字体、编辑器字体、界面语言全部实时跟随
+DBX 设置，改完立即生效，无需重开工作台。界面提供简体中文与 English 双语。
+
+密钥安全模型见第 5 节。
+
+### 8.2 安装
+
+**推荐：官方商店**。本插件已上架 DBX 官方商店（`t8y2/dbx-store`），在 DBX **插件中心**搜索
+「Translation 即时翻译」直接安装，由商店统一签名。
+
+**自测：未签名本地包**。打开 **插件中心 → 设置**，开启「允许安装未签名开发包」，再安装
+`dist/com.vyrnax.translation-<version>-<target>.dbxp`。target 取值：
+`windows-x64` / `darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`。
+该开关不会放宽官方商店的安装校验。
+
+安装后从**工具栏图标**、**命令面板**或**插件中心**打开工作台。
+
+### 8.3 快速开始
+
+1. 打开插件 → 切到「引擎」页 → 点「添加引擎」
+2. 选择引擎类型，名称会自动填好
+3. 填入端点与 API Key（本地 CLI 引擎只需确认命令已在 PATH 中，**无需密钥**）
+4. 点「测试连接」确认可用 → 保存
+5. 回到「翻译」页，选目标语言，直接在原文框打字
+
+`Ctrl/Cmd + Enter` 手动触发翻译，`Esc` 取消进行中的翻译。
+
+### 8.4 已知限制（宿主能力边界）
+
+| 限制 | 原因 |
+|---|---|
+| 不支持编辑器划词翻译 | DBX 插件系统没有编辑器选区 API，`context-menu` 仅支持连接与表节点 |
+| 不支持译文内联提示 | 插件 UI 运行在 iframe 沙箱内，无法覆盖宿主 DOM |
+| 不支持自定义快捷键 | DBX 没有提供 keybinding 贡献点 |
+| 浮动窗口「复制即译」尚未实现 | 需 `host.workbench` + `host.clipboard:read`；宿主能力已核实（见 `AGENTS.md` §1.2），属后续版本 |
+| 表/字段注释批量翻译尚未实现 | 需 `host.data:read`（Host API 1.4），会抬高最低宿主版本，单独评估 |
+
+### 8.5 排查
+
+打开插件右上角「⋯ → 查看诊断报告」，一键复制后提交 Issue。报告含环境快照、侧车状态、
+密钥保护方案、主题与语言的实际生效值，以及最近 150 条分步日志。**报告不含任何 API Key**
+（自动脱敏），可以放心公开粘贴。
+
+侧车日志在插件数据目录下的 `sidecar-trace.log`（Windows 通常在
+`%APPDATA%\com.dbx.app\plugin-data\com.vyrnax.translation\`）。
+
+---
+
+## 9. 许可
 
 Apache-2.0

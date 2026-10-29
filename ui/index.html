@@ -98,6 +98,16 @@
             </div>
             <button id="btn-manage-engines" class="ghost sm" type="button" data-i18n="manage">管理</button>
           </div>
+          <!-- 内置免费引擎提示条：只在当前引擎是内置免费服务时出现，
+               位置刻意夹在「管理」与「输入即译」之间：左边是它的解决入口，
+               右边是用户正在用的开关，读起来就是「关于你现在选的这台引擎」。
+               默认 hidden，由 app.js 的 updateFreeNotice 决定是否显示。 -->
+          <div id="free-notice" class="free-notice" hidden>
+            <span class="free-notice-icon" aria-hidden="true">&#9888;</span>
+            <span id="free-notice-text" class="free-notice-text" data-i18n="freeNotice">当前使用的是内置免费服务：公益端点，高峰期可能变慢或失败。稳定使用建议配置官方引擎。</span>
+            <button id="btn-free-notice-go" class="free-notice-go" type="button" data-i18n="freeNoticeGo">去配置</button>
+            <button id="btn-free-notice-close" class="free-notice-close" type="button" data-i18n="freeNoticeClose">不再提示</button>
+          </div>
           <div class="translate-options">
             <label class="checkbox-label" title="输入停顿后自动翻译">
               <input id="chk-instant" type="checkbox" />
@@ -364,7 +374,10 @@
                改过之后再切换类型【不会】覆盖用户输入（脏值跟踪，见 engines.js）。 -->
           <div class="field">
             <span class="field-label"><span data-i18n="engineName">引擎名称</span> <em>*</em></span>
-            <input id="engine-name" class="input" type="text" maxlength="60"
+            <!-- maxlength 是【字符数】的粗上限（32 个字符必然 ≤ 32 单位）；
+               半角/全角的精确计宽由 storage.js 的 truncateToUnits 实时执行，
+               并由侧车 engines/save 兜底校验（拦得住手工 RPC 与旧备份导入）。 -->
+            <input id="engine-name" class="input" type="text" maxlength="32"
                    autocomplete="off" data-i18n-placeholder="engineNamePlaceholder"
                    placeholder="例如：阿里云翻译（生产）" />
             <p id="engine-name-hint" class="field-desc" data-i18n="engineNameHint">

@@ -391,14 +391,16 @@ func TestDefaultEngine_FallbackToEnabled(t *testing.T) {
 	}
 }
 
-// TestReorderEngines 验证重排生效、未列出的引擎不消失，且默认引擎永远置顶。
+// TestReorderEngines 验证顺序只由用户重排（ord）决定。
 //
-// 「默认引擎置顶」是有意的产品契约，不是实现副作用：
-// 用户在引擎列表里拖动排序或切换默认引擎后，翻译页的引擎下拉必须按
-// 「默认第一、其余按列表顺序」重建，否则「记住上次选择」的恢复逻辑
-// 会与用户看到的顺序打架。因此本用例同时钉住两件事：
-//  1. 置顶只影响默认引擎自己，其余引擎的相对顺序仍完全由 ord 决定；
-//  2. 未出现在重排列表里的引擎排到最后，而不是消失。
+// 契约（2026-10-29 明确）：【「设为默认」不参与排序】。
+// 早先的实现是 ORDER BY is_default DESC —— 点一下「设为默认」引擎就插队到第一位，
+// 用户再也不能靠自己控制列表顺序；而翻译页的下拉又必须与列表同序，
+// 于是「改默认」这个动作会连带改掉两处排列，症状是「我只想设个默认，怎么整个列表都变了」。
+// 现在顺序与默认彻底解耦，本用例钉住三点：
+//  1. ReorderEngines 的结果就是 ListEngines 的顺序；
+//  2. 未出现在重排列表里的引擎排到最后，而不是消失；
+//  3. 换默认引擎【不改变】顺序，但 DefaultEngine() 必须跟着换。
 func TestReorderEngines(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"e1", "e2", "e3"} {
@@ -407,7 +409,7 @@ func TestReorderEngines(t *testing.T) {
 		}
 	}
 	// SaveEngine 会把第一个入库的引擎自动设为默认，所以此时默认是 e1。
-	// 只列出两个，e3 应排到后面而不是消失。
+	// 只列出两个，e3 不在重排列表里，应排到最后而不是消失。
 	if _, err := s.ReorderEngines([]string{"e2", "e1"}, -1); err != nil {
 		t.Fatalf("重排失败: %v", err)
 	}
@@ -421,20 +423,29 @@ func TestReorderEngines(t *testing.T) {
 		}
 		return list[0].ID + "," + list[1].ID + "," + list[2].ID
 	}
-	// e1 是默认引擎 → 置顶；e2 被重排到 ord=0，e1 因此排在它前面；
-	// e3 不在重排列表里，被整体加了偏移量，必须落到最后。
-	if got := order(); got != "e1,e2,e3" {
-		t.Errorf("默认引擎置顶后的顺序 = %s, 期望 e1,e2,e3", got)
+	// e2 被放到 ord=0 所以第一，e1 紧随其后，e3 被加偏移量落到最后。
+	// 关键：默认引擎是 e1，它【没有】因为默认而插到 e2 前面。
+	if got := order(); got != "e2,e1,e3" {
+		t.Errorf("重排后的顺序 = %s, 期望 e2,e1,e3（默认引擎不参与排序）", got)
 	}
 
-	// 把默认引擎换成 e3：重排结果本身不变，只是 e3 顶到最前。
-	// 这一步才真正证明「重排生效」——只测上面那一组的话，
-	// 全为 0 的 ord 也能凑出同样的顺序，测试就失去意义。
+	// 换默认到 e3：顺序必须一动不动，但 DefaultEngine() 要跟着换。
 	if _, err := s.SetDefaultEngine("e3", -1); err != nil {
 		t.Fatalf("设置默认引擎失败: %v", err)
 	}
-	if got := order(); got != "e3,e2,e1" {
-		t.Errorf("默认引擎切换后的顺序 = %s, 期望 e3,e2,e1", got)
+	if got := order(); got != "e2,e1,e3" {
+		t.Errorf("设默认改变了展示顺序 = %s, 期望仍是 e2,e1,e3（设默认不是重新排版的指令）", got)
+	}
+	if def, err := s.DefaultEngine(); err != nil || def.ID != "e3" {
+		t.Errorf("DefaultEngine() = %+v err=%v, 期望 e3（默认标记本身必须生效）", def, err)
+	}
+
+	// 用户还能亲手把默认引擎拖到第一位 —— 顺序与默认彻底解耦。
+	if _, err := s.ReorderEngines([]string{"e3", "e1", "e2"}, -1); err != nil {
+		t.Fatalf("再次重排失败: %v", err)
+	}
+	if got := order(); got != "e3,e1,e2" {
+		t.Errorf("再次重排后的顺序 = %s, 期望 e3,e1,e2", got)
 	}
 }
 

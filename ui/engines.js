@@ -166,6 +166,39 @@
     }
   }
 
+  /* ============ 内置引擎 ============ */
+
+  // isBuiltinRow 判断一条引擎记录是不是内置引擎。
+  //
+  // 判据来自侧车下发的 builtin 字段（存储层的 builtin 列），
+  // 【不是】前端按 kind 名硬编码：那样等于在前端维护第二份「谁是内置」的名单，
+  // 以后再加一个内置引擎就得改前端 —— 而「新增引擎前端零改动」是本项目的架构承诺。
+  function isBuiltinRow(e) {
+    return !!(e && e.builtin);
+  }
+
+  // selectableKinds 返回【可手动添加】的引擎类型：内置类型被排除。
+  //
+  // 内置引擎侧车在安装时就已经播种，再让用户「添加」一个，
+  // 只会得到一个配置改不了、又删不掉的重复记录。
+  function selectableKinds() {
+    return state.kinds.filter(function (k) { return !k.builtin; });
+  }
+
+  // displayName 返回引擎行的显示名。
+  //
+  // 内置引擎必须走 schema 的 label / labelEn，而不是存储记录里的 name：
+  // 记录里存的是侧车按中文常量写死的名字，英文界面下显示「免费翻译服务」很奇怪。
+  // 普通引擎的名字是用户自己起的，必须照他的输入原样显示。
+  function displayName(e) {
+    if (!e) { return ""; }
+    if (isBuiltinRow(e)) {
+      var k = state.kindMap[e.kind] || {};
+      return label(k, "label", "labelEn") || e.name || e.kind;
+    }
+    return e.name || e.kind;
+  }
+
   /* ============ 列表渲染 ============ */
 
   function renderList() {
@@ -182,22 +215,29 @@
   function renderCard(e, index) {
     var kindInfo = state.kindMap[e.kind] || {};
     var cfg = e.config || {};
+    var builtin = isBuiltinRow(e);
 
     // 副标题：显示端点或模型，让用户不点开也能分辨同类引擎
     var sub = cfg.endpoint || cfg.model || cfg.cliPath || "";
     if (cfg.endpoint && cfg.model) { sub = cfg.model + " · " + cfg.endpoint; }
+    // 内置引擎没有用户可填的端点概念（用户也不该关心域名），副标题改成说清它的性质
+    if (builtin) { sub = t("builtinSub"); }
 
     var badges = [];
     if (e.isDefault) { badges.push(h("span", { class: "badge primary", text: t("defaultBadge") })); }
     if (!e.enabled) { badges.push(h("span", { class: "badge muted", text: t("disabledBadge") })); }
     if (kindInfo.streaming) { badges.push(h("span", { class: "badge ok", text: "流式" })); }
+    if (builtin) { badges.push(h("span", { class: "badge", text: t("builtinBadge") })); }
 
     var nameRow = h("div", { class: "engine-name" }, [
       // 图标放在最前面，读不到时 engineIcon 自己退成首字母色块，宽度不变、行高不抖
-      S.engineIcon(kindInfo, e.name || e.kind),
-      h("span", { text: e.name || e.kind }),
+      S.engineIcon(kindInfo, displayName(e)),
+      h("span", { text: displayName(e) })
+    ].concat(builtin ? [] : [
+      // 非内置行才显示「类型」徽标：内置行的名称本身就是类型名，
+      // 再挂一个同样的文字徽标是重复信息。
       h("span", { class: "badge", text: label(kindInfo, "label", "labelEn") || e.kind })
-    ].concat(badges));
+    ]).concat(badges));
 
     // 列表行不再展示 🔑+指纹：它只能证明"存了一把密钥"，信息量低且让列表显得乱。
     // 密钥是否已配置，用"编辑弹框里的密码框是否留空"就能判断，不必在列表里显示。
@@ -219,23 +259,27 @@
       h("button", {
         class: "ghost sm", type: "button",
         onclick: function () { openEditor(e); }
-      }, t("edit")),
+        // 内置引擎弹框是只读说明，按钮文案随之改成「说明」
+      }, builtin ? t("builtinInfoBtn") : t("edit"))
+    ].concat(builtin ? [] : [
+      // 【内置引擎没有删除入口】：它是插件能力的一部分，不是用户数据。
+      // 前端不给按钮只是体验，真正的防线在侧车（engines/delete 会拒绝），
+      // 因为手工构造的 RPC 与 data/import 都不经过这里。
       h("button", {
         class: "ghost sm danger-text", type: "button",
         onclick: function () { actDelete(e); }
       }, t("delete"))
-    ]);
+    ]));
 
     var card = h("div", {
       class: "engine-card" + (e.isDefault ? " is-default" : "") + (e.enabled ? "" : " is-disabled"),
       dataset: { id: e.id, index: String(index) }
     }, [
-      // 默认引擎永远第一、不可拖走：它的 grip 显示为禁用态，不绑拖拽事件
+      // 【所有】引擎的把手都可拖，包括默认引擎：
+      // 顺序只能由用户自己拖出来，「设为默认」不是重新排版的指令。
       h("span", {
-        class: "drag-handle" + (e.isDefault ? " drag-disabled" : ""),
-        title: e.isDefault
-          ? (isZh() ? "默认引擎固定在首位" : "Default engine is pinned first")
-          : (isZh() ? "拖动排序" : "Drag to reorder")
+        class: "drag-handle",
+        title: isZh() ? "按住拖动排序" : "Press and drag to reorder"
       }, "⠿"),
       h("div", { class: "engine-main" }, [nameRow, subRow]),
       actions
@@ -250,7 +294,9 @@
    * 所以改用 pointerdown / pointermove / pointerup 手写拖拽 —— 不依赖 dataTransfer，
    * 在任何宿主里都能工作。排序结果经 engines/reorder 持久化。
    */
-  var pdrag = { id: "", el: null };
+  // pdrag 记录一次拖动的状态。moved 用来区分「只是点了一下把手」与「真的拖了」：
+  // 前者不该发出任何写请求（白白 bumpRev，还会让别的窗口遇到一次乐观锁冲突）。
+  var pdrag = { id: "", el: null, moved: false };
 
   function boxCards() {
     var box = $("engine-list");
@@ -258,66 +304,94 @@
     return Array.prototype.slice.call(box.querySelectorAll(".engine-card"));
   }
 
-  // bindGrip 只在非默认引擎的 grip 上挂拖拽；默认引擎固定首位，不参与排序。
+  // bindGrip 给所有引擎（含默认引擎）的 grip 挂拖拽。
+  //
+  // 这里曾经有一行 `if (e.isDefault) { return; }`（默认引擎固定首位所以不许拖），
+  // 它与「设默认即插队」是同一个被推翻的设计的两半：只删插队不删这里，
+  // 默认引擎就会变成一个「既不能插队、又不能被挪动」的死位置。
   function bindGrip(card, e) {
-    if (e.isDefault) { return; }
     var grip = card.querySelector(".drag-handle");
     if (!grip) { return; }
 
     grip.addEventListener("pointerdown", function (ev) {
+      // 只认主键：右键/中键按下不该进入拖拽态
+      if (ev.button !== undefined && ev.button !== 0) { return; }
       ev.preventDefault();
       pdrag.id = e.id;
       pdrag.el = card;
+      pdrag.moved = false;
       card.classList.add("dragging");
-      try { grip.setPointerCapture(ev.pointerId); } catch (err) { /* 忽略 */ }
-    });
+      // 被拖的这一行对命中测试透明：否则它跟着光标走，命中判定永远命中它自己，
+      // 看起来就是「拖不动」（cardAt 里也再显式跳过一次，双保险）。
+      card.style.pointerEvents = "none";
+      // 拖动期间全局禁选：沙箱 iframe 里一旦起动原生文字选区，指针事件会被选区流程吃掉。
+      document.body.classList.add("is-reordering");
 
-    grip.addEventListener("pointermove", function (ev) {
-      if (!pdrag.el || pdrag.el !== card) { return; }
-      ev.preventDefault();
-      var target = cardAt(ev.clientY);
-      if (!target || target === card) { return; }
-      var box = $("engine-list");
-      var r = target.getBoundingClientRect();
-      if (ev.clientY < r.top + r.height / 2) { box.insertBefore(card, target); }
-      else { box.insertBefore(card, target.nextSibling); }
+      // 关键：move / up 一律挂在 window 上，【不依赖 setPointerCapture】。
+      // 旧实现把 move 挂在把手自身、指望 capture 把后续事件重定向过来，
+      // 而那句 setPointerCapture 被包在 try/catch 里静默失败过 ——
+      // 光标一离开这 15px 宽的把手，pointermove 就再也不到达，
+      // 症状正是用户报的「行变灰了但拖不动」。挂 window 才与捕获成败彻底解耦。
+      window.addEventListener("pointermove", onDragMove);
+      window.addEventListener("pointerup", onDragEnd);
+      window.addEventListener("pointercancel", onDragEnd);
     });
+  }
 
-    function finish() {
-      if (pdrag.el !== card) { return; }
-      card.classList.remove("dragging");
-      pdrag.id = ""; pdrag.el = null;
-      commitOrder();
-    }
-    grip.addEventListener("pointerup", finish);
-    grip.addEventListener("pointercancel", finish);
+  function onDragMove(ev) {
+    if (!pdrag.el) { return; }
+    ev.preventDefault();
+    var box = $("engine-list");
+    if (!box) { return; }
+    var target = cardAt(ev.clientY);
+    if (!target || target === pdrag.el) { return; }
+    var r = target.getBoundingClientRect();
+    if (ev.clientY < r.top + r.height / 2) { box.insertBefore(pdrag.el, target); }
+    else { box.insertBefore(pdrag.el, target.nextSibling); }
+    pdrag.moved = true;
+  }
+
+  function onDragEnd() {
+    window.removeEventListener("pointermove", onDragMove);
+    window.removeEventListener("pointerup", onDragEnd);
+    window.removeEventListener("pointercancel", onDragEnd);
+    document.body.classList.remove("is-reordering");
+    var card = pdrag.el;
+    var moved = pdrag.moved;
+    pdrag.el = null;
+    pdrag.id = "";
+    pdrag.moved = false;
+    if (!card) { return; }
+    card.classList.remove("dragging");
+    card.style.pointerEvents = "";
+    if (!moved) { return; }   // 只点了一下把手：不发多余的写请求
+    commitOrder();
   }
 
   function cardAt(clientY) {
     var cards = boxCards();
     for (var i = 0; i < cards.length; i++) {
+      if (cards[i] === pdrag.el) { continue; }   // 跳过被拖的那一行本身
       var r = cards[i].getBoundingClientRect();
       if (clientY >= r.top && clientY <= r.bottom) { return cards[i]; }
     }
     return null;
   }
 
-  // commitOrder 读取 DOM 实际顺序，把默认引擎 id 提到最前，再持久化。
-  // 即使拖拽过程中 DOM 顺序短暂错乱，最终写回的顺序也始终满足"默认第一"。
+  // commitOrder 读取 DOM 的实际顺序并原样持久化 —— 用户拖成什么样就是什么样。
+  //
+  // 这里原本有一段「把默认引擎 id 提到最前」的修正，是「默认置顶」契约的第三处
+  // 实现（前两处是 ListEngines 的 ORDER BY is_default DESC 与前端 orderedEngineList）：
+  // 表现就是无论把默认引擎拖到哪里，松手后它都会自己弹回第一位 ——
+  // 用户以为「拖动没生效」，实际上是代码在违背他的操作。
+  // 契约变更后（顺序只由拖动决定、设为默认不插队），这段修正必须删掉；
+  // 三处只要漏一处，就会出现「列表按拖的顺序、下拉却按默认插队」这种两处不一致。
   function commitOrder() {
     var cards = boxCards();
     var ids = [];
     for (var i = 0; i < cards.length; i++) {
       var id = cards[i].getAttribute("data-id");
       if (id) { ids.push(id); }
-    }
-    var def = null;
-    for (var j = 0; j < state.engines.length; j++) {
-      if (state.engines[j].isDefault) { def = state.engines[j].id; break; }
-    }
-    if (def) {
-      ids = ids.filter(function (x) { return x !== def; });
-      ids.unshift(def);
     }
     applyReorderIds(ids);
   }
@@ -328,14 +402,27 @@
       for (var i = 0; i < snapshot.length; i++) { if (snapshot[i].id === id) { return snapshot[i]; } }
       return null;
     }).filter(Boolean);
+    // 必须同时把 ord 写回每条记录：数组顺序换了但【ord 字段还是旧值】的话，
+    // 任何按 ord 排序的消费方（翻译页的引擎下拉 orderedEngineList）
+    // 都会拿到拖之前的顺序 —— 表现为「引擎页已经拖好了，下拉一点没变」。
+    // 这里按最终 DOM 顺序重编号，与 engines/reorder 落到侧车的 ord 保持一致。
+    for (var i = 0; i < state.engines.length; i++) {
+      state.engines[i].ord = i;
+    }
     renderList();
+    // 必须通知翻译页：loadEngines() 会 notifyChanged()，而这条本地路径以前漏了，
+    // 于是下拉要等到下次重新加载引擎列表才可能刷新（用户看不到任何报错）。
+    notifyChanged();
 
     S.reorderEngines(ids).then(function (res) {
       state.rev = (res && res.rev) || state.rev;
     }).catch(function (err) {
+      // 失败要整体回滚：数组顺序、ord、以及两个消费方的视图都得回到拖之前，
+      // 否则前端显示的顺序与库里的 ord 从此不一致，重启插件后顺序会「莫名跳回去」。
       reportErr("排序", err);
       state.engines = snapshot;
       renderList();
+      notifyChanged();
     });
   }
 
@@ -388,14 +475,31 @@
     state.secretTouched = false;
     state.nameTouched = false;
 
-    var titleEl = $("engine-modal-title");
-    if (titleEl) { titleEl.textContent = e ? t("editEngine") : t("addEngine"); }
+    // 内置引擎走【只读说明】形态：没有可改字段、没有删除、保存按钮变成「知道了」。
+    // 之所以复用同一个弹框而不是再写一个：它的信息本来就只有 schema 的 description，
+    // 再做一个弹框就是两处渲染同一份文案，迟早漂移。
+    state.editingBuiltin = !!(e && e.builtin);
+    var isB = state.editingBuiltin;
 
-    show("btn-engine-delete", !!e);
+    var titleEl = $("engine-modal-title");
+    if (titleEl) { titleEl.textContent = isB ? t("builtinEngineTitle") : (e ? t("editEngine") : t("addEngine")); }
+
+    show("btn-engine-delete", !!e && !isB);
+    var saveBtn = $("btn-engine-save");
+    if (saveBtn) { saveBtn.textContent = isB ? t("builtinDone") : t("save"); }
+    var cancelBtn = $("btn-engine-cancel");
+    if (cancelBtn) { cancelBtn.hidden = isB; }
+    var nameInput = $("engine-name");
+    if (nameInput) { nameInput.disabled = isB; }
+    var nameHint = $("engine-name-hint");
+    if (nameHint) { nameHint.textContent = isB ? t("builtinLocked") : t("engineNameHint"); }
     clearFormError();
 
     // 新建时默认选第一个引擎类型（openai 覆盖面最广）
-    state.editingKind = e ? e.kind : (state.kinds[0] ? state.kinds[0].kind : "");
+    // 新建时默认选第一个【可添加】类型（openai 覆盖面最广）；
+    // 必须跳过内置类型，否则新建出来的第一条就是那个改不了配置的重复记录。
+    var selectable = selectableKinds();
+    state.editingKind = e ? e.kind : (selectable[0] ? selectable[0].kind : "");
     // 编辑时锁定类型：换类型等于换一套完全不同的配置，应该删掉重建
     state.kindLocked = !!e;
     closeKindMenu();
@@ -404,7 +508,9 @@
     // 名称框：编辑时回填已有名称并标记为「用户已定名」（不再自动跟随类型），
     // 新建时填入所选类型的默认名。
     if (e) {
-      setVal("engine-name", e.name || "");
+      // 内置引擎不可改名，名称框里放的是 displayName()（随界面语言）而非存储记录里的
+      // 中文名 —— 英文界面下弹框里出现「免费翻译服务」会让人以为是没翻译的漏网文案。
+      setVal("engine-name", isB ? displayName(e) : (e.name || ""));
       // 编辑已有引擎时，名称是用户之前定的，切类型也不该动它
       // （何况编辑时类型选择框已被禁用，本来也切不了）
       state.nameTouched = true;
@@ -421,6 +527,17 @@
   function closeEditor() {
     show("engine-modal", false);
     state.editing = null;
+    // 复位只读态：弹框是复用的，上一次是内置引擎留下的 disabled/hidden
+    // 如果不清掉，下次打开普通引擎就会看到一个禁用的名称框和一个消失的测试按钮。
+    state.editingBuiltin = false;
+    var nameInput = $("engine-name");
+    if (nameInput) { nameInput.disabled = false; }
+    var cancelBtn = $("btn-engine-cancel");
+    if (cancelBtn) { cancelBtn.hidden = false; }
+    var saveBtn = $("btn-engine-save");
+    if (saveBtn) { saveBtn.textContent = t("save"); }
+    var nameHint = $("engine-name-hint");
+    if (nameHint) { nameHint.textContent = t("engineNameHint"); }
     state.editingKind = "";
     state.secretTouched = false;
     state.nameTouched = false;
@@ -475,7 +592,7 @@
     var menu = $("engine-kind-menu");
     if (!menu) { return; }
     menu.textContent = "";
-    state.kinds.forEach(function (k) {
+    selectableKinds().forEach(function (k) {
       var item = h("li", {
         class: "kind-item" + (k.kind === state.editingKind ? " is-active" : ""),
         role: "option",
@@ -530,7 +647,12 @@
   function openKindMenu() {
     if (state.kindLocked) { return; }
     var menu = $("engine-kind-menu");
-    if (menu) { menu.hidden = false; }
+    var anchor = $("engine-kind");
+    if (menu) {
+      menu.hidden = false;
+      // 与翻译页共用同一个自适应实现，避免两处行为漂移
+      if (S && S.fitDropdownMenu) { S.fitDropdownMenu(menu, anchor); }
+    }
     state.kindMenuOpen = true;
     var btn = $("engine-kind-btn");
     if (btn) { btn.setAttribute("aria-expanded", "true"); }
@@ -896,6 +1018,10 @@
   }
 
   function actSave() {
+    // 内置引擎的「知道了」就是关闭。不发 engines/save：
+    // 后端虽有兜底（会忽略改写），但白写一次会 bumpRev，
+    // 另一个 DBX 窗口手里的 rev 凭空过期，用户会遇到一次莫名的冲突重试。
+    if (state.editingBuiltin) { closeEditor(); return; }
     clearFormError();
     var verr = validateForm();
     if (verr) { showFormError(verr); return; }
@@ -1016,6 +1142,14 @@
     // 更稳的判定是「当前值是否还等于默认名」—— 用户把名字改回默认值时
     // 会自动恢复跟随行为，这比单纯的布尔标志更符合直觉。
     on("engine-name", "input", function () {
+      // 输入即限长：超过单位上限就当场裁掉（含粘贴 —— paste 后也会触发 input）。
+      // 为什么在前端就裁：后端也裁（engines/save 校验），但那种情况下用户
+      // 会看到「保存失败：名称过长」这种马后炮；当场限制才是他预期的行为。
+      var el = $("engine-name");
+      if (el && S && S.truncateToUnits) {
+        var cut = S.truncateToUnits(el.value, S.maxNameUnits || 32);
+        if (cut !== el.value) { el.value = cut; }
+      }
       state.nameTouched = !nameIsDefault(state.editingKind);
     });
 
@@ -1057,6 +1191,8 @@
   E.kinds = function () { return state.kinds; };
   E.languages = function () { return state.languages; };
   E.kindInfo = function (kind) { return state.kindMap[kind] || null; };
+  E.displayName = displayName;
+  E.isBuiltin = isBuiltinRow;
   E.openEditor = openEditor;
   E.defaultEngine = function () {
     for (var i = 0; i < state.engines.length; i++) {

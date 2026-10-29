@@ -328,9 +328,10 @@ func TestIsValid(t *testing.T) {
 
 // TestKnownKinds 验证已注册引擎清单完整。
 func TestKnownKinds(t *testing.T) {
-	// 8 类引擎：大模型类 2 个（openai / localcli）+ 传统机翻 6 个
+	// 9 类引擎：大模型类 3 个（openai / localcli / free）+ 传统机翻 6 个。
+	// free 是内置免费引擎，背后同样是翻译大模型，所以语言映射与 openai 一致。
 	want := map[string]bool{
-		"openai": true, "localcli": true, "deepl": true, "google": true,
+		"openai": true, "localcli": true, "free": true, "deepl": true, "google": true,
 		"baidu": true, "youdao": true, "aliyun": true, "tencent": true,
 	}
 	got := KnownKinds()

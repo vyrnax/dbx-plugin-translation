@@ -7,11 +7,17 @@ import (
 	"strings"
 )
 
-// ListEngines 返回全部引擎：默认引擎永远置顶，其余按 ord 升序、创建时间升序排列。
+// ListEngines 返回全部引擎，顺序【完全由 ord 决定】：ord 升序 → 创建时间升序 → rowid 升序。
 //
-// 「默认置顶」是产品硬性要求：翻译页的引擎下拉顺序必须与引擎列表完全一致，
-// 且默认引擎必须排在第一个。否则用户改了默认引擎后，下拉列表仍把旧引擎排在前面，
-// 「记住上次选择」的恢复逻辑也会和用户看到的顺序打架。
+// 【「是否默认」不参与排序】—— 这是 2026-10-29 明确的产品契约：
+// 顺序只能由用户自己拖出来，「设为默认」不是重新排版的指令。
+// 早先的实现是 ORDER BY is_default DESC，于是点一下「设为默认」引擎就抢到第一位，
+// 用户看到的顺序再也无法自己掌控（而且和「翻译页下拉与列表顺序一致」叠在一起，
+// 表现为「我只是想设个默认，怎么整个列表都变了」）。
+//
+// 为什么 created_at / rowid 仍要参与决胜：新引擎的 ord 由 RPC 层默认给 0，
+// 一堆 0 的时候必须有稳定次序，否则 SQLite 每次返回的行序都可能不同，
+// 表现是「什么都没动，列表自己换了顺序」。rowid 是最后的确定性兜底。
 //
 // 【刻意不 JOIN secrets 表】：列表查询根本不需要密文，
 // 不碰它就从根本上杜绝了「不小心把密钥查出来」的可能。
@@ -19,9 +25,9 @@ import (
 func (s *Store) ListEngines() ([]Engine, error) {
 	rows, err := s.db.Query(`
 		SELECT id, name, kind, config_json, has_secret, fingerprint,
-		       is_default, enabled, ord, created_at, updated_at
+		       is_default, enabled, ord, builtin, created_at, updated_at
 		FROM engines
-		ORDER BY is_default DESC, ord ASC, created_at ASC, rowid ASC`)
+		ORDER BY ord ASC, created_at ASC, rowid ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("查询引擎列表失败: %w", err)
 	}
@@ -53,11 +59,12 @@ func scanEngine(r scanner) (Engine, error) {
 		fingerprint sql.NullString
 		isDefault   int
 		enabled     int
+		builtin     int
 		createdAt   sql.NullString
 		updatedAt   sql.NullString
 	)
 	if err := r.Scan(&e.ID, &e.Name, &e.Kind, &configJSON, &hasSecret, &fingerprint,
-		&isDefault, &enabled, &e.Ord, &createdAt, &updatedAt); err != nil {
+		&isDefault, &enabled, &e.Ord, &builtin, &createdAt, &updatedAt); err != nil {
 		return Engine{}, fmt.Errorf("读取引擎记录失败: %w", err)
 	}
 	e.Config = unmarshalConfig(configJSON)
@@ -65,6 +72,7 @@ func scanEngine(r scanner) (Engine, error) {
 	e.Fingerprint = fingerprint.String
 	e.IsDefault = isDefault != 0
 	e.Enabled = enabled != 0
+	e.Builtin = builtin != 0
 	e.CreatedAt = createdAt.String
 	e.UpdatedAt = updatedAt.String
 	return e, nil
@@ -74,7 +82,7 @@ func scanEngine(r scanner) (Engine, error) {
 func (s *Store) GetEngine(id string) (Engine, error) {
 	row := s.db.QueryRow(`
 		SELECT id, name, kind, config_json, has_secret, fingerprint,
-		       is_default, enabled, ord, created_at, updated_at
+		       is_default, enabled, ord, builtin, created_at, updated_at
 		FROM engines WHERE id=?`, id)
 	e, err := scanEngine(row)
 	if err != nil {
@@ -128,10 +136,27 @@ func (s *Store) SaveEngine(e Engine, expectRev int) (int, error) {
 			created = existingCreated.String
 		}
 
+		// 【内置引擎保护】：命中内置记录时，name / kind / config 一律沿用库里的值，
+		// 只有 enabled / is_default / ord 允许改（用户确实需要启用禁用与设默认）。
+		//
+		// 为什么拦在存储层而不是 RPC 层：engines/save、data/import、以及未来任何
+		// 新增的写入路径都会经过这里；只在 handler 里判断，迟早漏一条，
+		// 而漏一次的后果是「内置引擎被改名或改了端点」—— 用户从此分不清它是不是内置的。
+		var existingBuiltin int
+		_ = tx.QueryRow(`SELECT builtin FROM engines WHERE id=?`, e.ID).Scan(&existingBuiltin)
+		if existingBuiltin != 0 {
+			e.Builtin = true
+			var bName, bKind, bCfg string
+			if err := tx.QueryRow(`SELECT name, kind, config_json FROM engines WHERE id=?`, e.ID).
+				Scan(&bName, &bKind, &bCfg); err == nil {
+				e.Name, e.Kind, cfgJSON = bName, bKind, bCfg
+			}
+		}
+
 		if _, err := tx.Exec(`
 			INSERT INTO engines (id, name, kind, config_json, has_secret, fingerprint,
-			                     is_default, enabled, ord, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?)
+			                     is_default, enabled, ord, builtin, created_at, updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(id) DO UPDATE SET
 				name=excluded.name,
 				kind=excluded.kind,
@@ -139,9 +164,10 @@ func (s *Store) SaveEngine(e Engine, expectRev int) (int, error) {
 				is_default=excluded.is_default,
 				enabled=excluded.enabled,
 				ord=excluded.ord,
+				builtin=excluded.builtin,
 				updated_at=excluded.updated_at`,
 			e.ID, e.Name, e.Kind, cfgJSON, boolToInt(e.HasSecret), e.Fingerprint,
-			boolToInt(e.IsDefault), boolToInt(e.Enabled), e.Ord, created, now); err != nil {
+			boolToInt(e.IsDefault), boolToInt(e.Enabled), e.Ord, boolToInt(e.Builtin), created, now); err != nil {
 			return fmt.Errorf("写入引擎失败: %w", err)
 		}
 
@@ -152,12 +178,27 @@ func (s *Store) SaveEngine(e Engine, expectRev int) (int, error) {
 				return fmt.Errorf("清除旧默认引擎失败: %w", err)
 			}
 		}
-		// 如果这是第一个引擎，自动设为默认（用户不必手动点一次）
+		// 首个【用户引擎】自动设为默认（用户不必手动点一次）。
+		//
+		// 判据从「库里只有 1 条记录」改成「非内置记录只有 1 条」：
+		// 内置引擎从安装起就占着一条记录，旧判据此后永远不成立，
+		// 症状是「用户专门配好了官方引擎，翻译却还在走免费端点」——
+		// 而他配引擎的目的恰恰就是为了不用免费端点。
 		var count int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM engines`).Scan(&count); err != nil {
-			return fmt.Errorf("统计引擎数量失败: %w", err)
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM engines WHERE builtin=0`).Scan(&count); err != nil {
+			return fmt.Errorf("统计用户引擎数量失败: %w", err)
 		}
-		if count == 1 {
+		if count == 1 && !e.Builtin {
+			// 提升的同时【必须清掉别人的默认标记】。
+			//
+			// 内置引擎此刻正占着默认，只写自己这一条会留下【两个】默认引擎。
+			// 顺序不参与（ListEngines 只按 ord 排），但 DefaultEngine() 是按列表顺序
+			// 找第一个 is_default=1 的启用的引擎 —— 内置记录创建更早，它仍然是赢的那个，
+			// 症状同样是「用户专门配好了官方引擎，翻译却还在走免费端点」。
+			// 这条坑由 TestBuiltin_FirstUserEngineBecomesDefault 钉住。
+			if _, err := tx.Exec(`UPDATE engines SET is_default=0`); err != nil {
+				return fmt.Errorf("清除旧默认标记失败: %w", err)
+			}
 			if _, err := tx.Exec(`UPDATE engines SET is_default=1 WHERE id=?`, e.ID); err != nil {
 				return fmt.Errorf("设置首个引擎为默认失败: %w", err)
 			}
@@ -209,6 +250,13 @@ func (s *Store) DeleteEngine(id string, expectRev int) (int, error) {
 		}
 		if exists == 0 {
 			return ErrNotFound
+		}
+		var isBuiltin int
+		if err := tx.QueryRow(`SELECT builtin FROM engines WHERE id=?`, id).Scan(&isBuiltin); err != nil {
+			return fmt.Errorf("检查引擎是否内置失败: %w", err)
+		}
+		if isBuiltin != 0 {
+			return ErrBuiltin
 		}
 		if _, err := tx.Exec(`DELETE FROM secrets WHERE engine_id=?`, id); err != nil {
 			return fmt.Errorf("删除密钥失败: %w", err)

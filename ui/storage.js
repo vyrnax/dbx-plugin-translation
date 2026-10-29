@@ -55,7 +55,7 @@
   var MAX_UPSTREAM_BYTES = 1500 * 1000;
 
   /* ============ 版本号（打包脚本会校验它与 manifest.version 一致）============ */
-  var UI_VERSION = "0.2.3";
+  var UI_VERSION = "0.2.4";
 
   /* ============ 诊断日志 ============
    * 安装后白屏 / 存不上时，这份报告是唯一的排查证据。
@@ -616,6 +616,109 @@
     return wrap;
   }
 
+  // fitDropdownMenu 把自绘下拉按【最长选项】展开，并夹在可用空间内。
+  // 两处下拉（翻译页选引擎、引擎管理的选类型）共用这一个实现，避免行为漂移。
+  //
+  // ⚠️ 关键坑：测量自然宽度时【不能】用「清空 width 再读 offsetWidth」。
+  // 绝对定位元素的 width:auto 走的是 shrink-to-fit，会被它的包含块
+  // （这里是 max-width 只有 300px 的 .kind-select）夹住，
+  // 于是量回来的一定是容器宽，「自适应」退化成「跟容器同宽」——
+  // 症状就是用户报的「加了名称上限，下拉宽度还是没变化」。
+  // 必须先显式写 width: max-content（max-content 不受可用空间约束）拿到真正的
+  // 自然宽度，再算夹取结果；万一浏览器不支持 max-content，还要退回逐项累加
+  // scrollWidth 的算法，绝不能退回「读 offsetWidth」。
+  function naturalMenuWidth(menu) {
+    var w = 0;
+    try {
+      menu.style.width = "max-content";
+      w = menu.offsetWidth || 0;
+    } catch (e) {
+      w = 0;
+    }
+    if (w > 0) { return w; }
+    // 兜底：逐项取 scrollWidth（内容宽，不受父级夹取影响）中的最大值
+    var kids = menu.children || [];
+    for (var i = 0; i < kids.length; i++) {
+      var sw = kids[i].scrollWidth || 0;
+      if (sw > w) { w = sw; }
+    }
+    // 菜单自身还有左右 padding，实测过 8px，保守按 16 计入
+    return w ? w + 16 : 0;
+  }
+
+  function fitDropdownMenu(menu, anchor) {
+    if (!menu || !anchor) { return; }
+    var MAX = 380;   // 视觉上限：再宽就不像一个下拉而像另一个面板了
+    var EDGE = 12;   // 距视口右缘的呼吸空间
+    var content = naturalMenuWidth(menu);
+    var box = anchor.offsetWidth || 0;
+    var left = 0;
+    try { left = anchor.getBoundingClientRect().left || 0; } catch (e) { left = 0; }
+    var vw = (window && window.innerWidth) ||
+      (document.documentElement && document.documentElement.clientWidth) || 800;
+    var avail = Math.max(150, vw - left - EDGE);
+    // 不小于容器宽度（菜单比按钮窄很难看），不大于 min(自然宽, MAX, 可用宽)
+    var w = Math.min(Math.max(content, box), MAX, avail);
+    menu.style.width = Math.round(w) + "px";
+  }
+
+  // isWideChar 判断字符是否占两个显示宽度（CJK / 全角标点 / 假名 / 韩文）。
+  // 取值区间与 backend/main.go 的 isWideRune 一一对应 —— 两处必须同规则，
+  // 否则前端放过的名称会被后端拒绝，用户看到的是「明明没超长却保存失败」。
+  function isWideChar(code) {
+    return (code >= 0x1100 && code <= 0x115F) ||
+      (code >= 0x2E80 && code <= 0x303E) ||
+      (code >= 0x3041 && code <= 0x33FF) ||
+      (code >= 0x3400 && code <= 0x4DBF) ||
+      (code >= 0x4E00 && code <= 0x9FFF) ||
+      (code >= 0xA000 && code <= 0xA4CF) ||
+      (code >= 0xAC00 && code <= 0xD7A3) ||
+      (code >= 0xF900 && code <= 0xFAFF) ||
+      (code >= 0xFE30 && code <= 0xFE6F) ||
+      (code >= 0xFF00 && code <= 0xFF60) ||
+      (code >= 0xFFE0 && code <= 0xFFE6);
+  }
+
+  // nameUnits 计算名称占用的显示宽度单位（全角 2、半角 1）。
+  //
+  // 为什么不用字符数：界面限制的本质是「占多少地方」。
+  // 同样 16 个字符，「阿里云翻译（生产环境备用）」的宽度约是 16 个 ASCII 字母的两倍，
+  // 用统一字符数就会让中文名称更容易撑破下拉框。
+  function nameUnits(str) {
+    var n = String(str == null ? "" : str);
+    var units = 0;
+    for (var i = 0; i < n.length; i++) {
+      var code = n.charCodeAt(i);
+      // 代理对（emoji 等）整体算 2 个单位，且只计一次
+      if (code >= 0xD800 && code <= 0xDBFF) {
+        units += 2;
+        i++;
+        continue;
+      }
+      units += isWideChar(code) ? 2 : 1;
+    }
+    return units;
+  }
+
+  // truncateToUnits 把名称裁到不超过 max 个单位（用于输入框的实时限制）。
+  function truncateToUnits(str, max) {
+    var n = String(str == null ? "" : str);
+    if (nameUnits(n) <= max) { return n; }
+    var out = "";
+    var units = 0;
+    for (var i = 0; i < n.length; i++) {
+      var code = n.charCodeAt(i);
+      var step = 1, ch = n[i];
+      if (code >= 0xD800 && code <= 0xDBFF) { step = 2; ch = n.substr(i, 2); }
+      var add = (step === 2 || isWideChar(code)) ? 2 : 1;
+      if (units + add > max) { break; }
+      units += add;
+      out += ch;
+      i += step - 1;
+    }
+    return out;
+  }
+
   var Store = {
     VERSION: UI_VERSION,
 
@@ -740,6 +843,13 @@
     // engineIcon 返回可直接 appendChild 的节点；iconDataUrl 供需要裸 URL 的场景使用
     engineIcon: engineIcon,
     iconDataUrl: iconDataUrl,
+    fitDropdownMenu: fitDropdownMenu,
+    nameUnits: nameUnits,
+    truncateToUnits: truncateToUnits,
+    // maxNameUnits 必须与 backend/main.go 的 maxEngineNameUnits 一致（32）。
+    // 单一事实来源在后端，这里只是前端实时截断用的镜像值：
+    // 真正挡住超长名称的是 engines/save 的校验，前端只是不让用户输超。
+    maxNameUnits: 32,
     // hasIconApi 供诊断报告说明「为什么图标退成了字母」
     hasIconApi: function () { return !!(api && typeof api.readAsset === "function"); }
   };

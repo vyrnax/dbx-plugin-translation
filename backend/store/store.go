@@ -77,8 +77,13 @@ type Engine struct {
 	IsDefault   bool           `json:"isDefault"`
 	Enabled     bool           `json:"enabled"`
 	Ord         int            `json:"ord"`
-	CreatedAt   string         `json:"createdAt,omitempty"`
-	UpdatedAt   string         `json:"updatedAt,omitempty"`
+	// Builtin 为 true 表示这是【内置引擎】：名字/类型/配置由代码拥有，
+	// 不可删除、不可改写，只允许改 Enabled / IsDefault / Ord。
+	// 保护逻辑在 SaveEngine / DeleteEngine 内部，不在 RPC 层 ——
+	// 只在某个 handler 里判断，迟早有一条写入路径漏掉。
+	Builtin   bool   `json:"builtin"`
+	CreatedAt string `json:"createdAt,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
 }
 
 // SecretRecord 是密钥密文记录。
@@ -182,6 +187,7 @@ func (s *Store) migrate() error {
 			is_default  INTEGER NOT NULL DEFAULT 0,
 			enabled     INTEGER NOT NULL DEFAULT 1,
 			ord         INTEGER NOT NULL DEFAULT 0,
+			builtin     INTEGER NOT NULL DEFAULT 0,
 			created_at  TEXT,
 			updated_at  TEXT
 		)`,
@@ -225,6 +231,13 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migrate[%d/%d]: %w", i+1, len(stmts), err)
 		}
 	}
+	// 幂等加列：老库升级时 builtin 列还不存在，ALTER 会报 duplicate column，
+	// 忽略即可；新库由上面的 CREATE TABLE 直接带上（见 AGENTS.md 6.6）。
+	if _, err := s.db.Exec(`ALTER TABLE engines ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0`); err != nil &&
+		!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		return fmt.Errorf("加 builtin 列失败: %w", err)
+	}
+
 	// 初始化 meta：rev 从 0 开始，schema_version 供未来迁移分支
 	if _, err := s.db.Exec(
 		`INSERT OR IGNORE INTO meta(key, value) VALUES('rev','0'),('schema_version',?)`,

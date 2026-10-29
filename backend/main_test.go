@@ -1445,3 +1445,82 @@ func TestEngineErr_RedactsSecrets(t *testing.T) {
 		t.Errorf("错误消息泄露了密钥: %s", got.Message)
 	}
 }
+
+// TestNameWidthUnits 钉住「全角按 2、半角按 1」的计数规则与边界。
+//
+// 两组断言各有分工：
+//   - 只测 ASCII 的话，「汉字算 2 单位」这条规则整体写错也测不出来；
+//   - 只测超长被拒的话，把 > 写成 >= 这种边界错误没人发现，
+//     而它的症状是用户一个恰好合法的名称被莫名其妙拒掉，比放行超长更气人。
+func TestNameWidthUnits(t *testing.T) {
+	cases := []struct {
+		name  string
+		units int
+	}{
+		{"DeepL 生产环境", 14},             // 5 字母 + 1 空格 + 4 汉字×2
+		{"阿里云翻译（生产环境备用节点）", 30},        // 15 个全角字符（含全角括号）
+		{strings.Repeat("名", 16), 32},  // 恰好等于上限
+		{strings.Repeat("名", 17), 34},  // 超 2 单位
+		{strings.Repeat("a", 32), 32},  // 32 个字母同样合法
+		{strings.Repeat("a", 33), 33},  // 超 1 单位
+		{strings.Repeat("（）", 16), 64}, // 全角标点必须按宽字符算
+		{"LLM·生产", 8},                  // 半角字母 + 间隔号（半角）+ 汉字
+		{"", 0},                        // 空串走默认名兜底，不该 panic
+	}
+	for _, c := range cases {
+		if got := nameWidthUnits(c.name); got != c.units {
+			t.Errorf("nameWidthUnits(%q) = %d, 期望 %d", c.name, got, c.units)
+		}
+	}
+}
+
+// TestEngines_NameTooLong 验证 engines/save 真的会挡住超长名称、放过边界值。
+func TestEngines_NameTooLong(t *testing.T) {
+	p := newTestPlugin(t)
+	save := func(name string) *dbxpluginsdk.PluginError {
+		_, rpcErr := call(p, "engines/save", map[string]any{
+			"kind":    "openai",
+			"name":    name,
+			"config":  map[string]any{"endpoint": "https://api.example.com/v1", "model": "m"},
+			"secrets": map[string]any{"apiKey": "sk-test-1234567890"},
+			"rev":     -1,
+		})
+		return rpcErr
+	}
+	if err := save(strings.Repeat("名", 17)); err == nil || err.Code != -32602 {
+		t.Errorf("超长名称应返回 -32602，实际 %v", err)
+	}
+	if err := save(strings.Repeat("名", 16)); err != nil {
+		t.Errorf("恰好 %d 单位的名称被拒: %v", maxEngineNameUnits, err)
+	}
+	// 被拒的这次不能留下副作用：库里必须只有那一台合法的
+	list, err := p.store.ListEngines()
+	if err != nil {
+		t.Fatalf("列表查询失败: %v", err)
+	}
+	if len(list) != 1 {
+		t.Errorf("被拒绝的保存产生了副作用：引擎数 = %d, 期望 1", len(list))
+	}
+}
+
+// TestSchema_DefaultNamesFitLimit 保证【自动补全的默认名】自己不会撞上限。
+//
+// 这是自己打自己的坑：默认名来自 schema，保存时又由本插件校验长度。
+// 将来若有人加了个超长的默认名，用户什么都不改、直接点保存就会看到失败。
+func TestSchema_DefaultNamesFitLimit(t *testing.T) {
+	for _, k := range engine.Schemas() {
+		for _, v := range []struct {
+			what string
+			s    string
+		}{{"DefaultName", k.DefaultName}, {"DefaultNameEn", k.DefaultNameEn},
+			{"Label", k.Label}, {"LabelEn", k.LabelEn}} {
+			if v.s == "" {
+				continue
+			}
+			if u := nameWidthUnits(v.s); u > maxEngineNameUnits {
+				t.Errorf("引擎 %s 的 %s 超出名称上限：%q = %d 单位 > %d",
+					k.Kind, v.what, v.s, u, maxEngineNameUnits)
+			}
+		}
+	}
+}

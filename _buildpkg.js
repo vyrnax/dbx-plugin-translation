@@ -529,6 +529,30 @@ if (goId !== mani.id) {
   process.exit(1);
 }
 
+// ---- 5.1) RELEASE_NOTES.md 必须是【当前版本】的说明 ----
+//
+// 它是 GitHub Release 的正文（release.yml 用 notes_file="RELEASE_NOTES.md"）。
+// 约定：只写当前版本的变更，不累积历史 —— 历史归档在 GitHub Releases 页面与 git tag 里，
+// 每个 Release 的 body 就是当时的不可变快照。
+//
+// 为什么必须有闸门：此前没有任何东西校验这个文件，「忘了重写」是静默失败 ——
+// 新版 Release 挂着旧版说明，用户与审核者看到的都是错的信息，而打包、哈希、安装全绿。
+{
+  const rnPath = path.join(root, "RELEASE_NOTES.md");
+  if (!fs.existsSync(rnPath)) {
+    console.error("\n[FATAL] 缺 RELEASE_NOTES.md —— 它会被 CI 当成 Release 正文，不能没有。\n");
+    process.exit(1);
+  }
+  const rnFirst = fs.readFileSync(rnPath, "utf8").split(/\r?\n/)[0];
+  const rnVer = (rnFirst.match(/(\d+\.\d+\.\d+)/) || [])[1];
+  if (rnVer !== ver) {
+    console.error(`\n[FATAL] RELEASE_NOTES.md 首行是 v${rnVer}，但 manifest.version=${ver}。\n` +
+      `        该文件只写【当前版本】的变更，发版时必须整体重写（不要在后面追加一节）。\n` +
+      `        首行实际内容：${rnFirst}\n`);
+    process.exit(1);
+  }
+}
+
 // ---- 5.5) 商店上架闸门：LICENSE 必须存在 ----
 //
 // 这两条都是 v0.2.1 首次上架被官方打回的真实原因，固化成闸门防止再犯。
@@ -593,6 +617,36 @@ if (crlfFiles.length) {
   console.error("        「被签名的字节与声明的源码对不上」—— 这是没有裁量空间的 provenance 硬伤。\n");
   process.exit(1);
 }
+// (b2) CSS 语法闸门：注释只能用 /* */，且必须闭合
+//
+// 真实踩过的坑：给 styles.css 加规则时按 JS 习惯写了 `// 说明`。
+// 本地完全看不出来 —— 文件照样打包、_domcheck 不检查 CSS、构建也不报错，
+// 但 CSS 没有行注释语法，浏览器会按错误恢复处理，
+// 结果是【连它后面那条规则一起被吞掉】：
+// 我加了 `.engine-picker .kind-select { min-width:150px }` 却因为上面两行 // 而完全不生效，
+// 表现成「样式明明写了、下拉宽度还是没变」，本地用无头浏览器量 width 才发现。
+// 所以凡是「只有运行时才暴露」的语法问题，都必须在打包阶段挡住。
+for (const [name, data] of files) {
+  if (!name.toLowerCase().endsWith(".css")) continue;
+  const css = data.toString("utf8");
+  const badLine = css.split(/\r?\n/).find((ln) => /^\s*\/\//.test(ln));
+  if (badLine !== undefined) {
+    console.error(`\n[FATAL] ${name} 里出现 CSS 不支持的行注释：${badLine.trim().slice(0, 60)}`);
+    console.error("        CSS 只有 /* */ 一种注释；写 // 会让浏览器在错误恢复时");
+    console.error("        把紧随其后的那条规则一起丢弃 —— 症状是「规则写了却毫无效果」。\n");
+    process.exit(1);
+  }
+  let depth = 0;
+  for (let i = 0; i + 1 < css.length; i++) {
+    if (css[i] === "/" && css[i + 1] === "*") { depth++; i++; }
+    else if (css[i] === "*" && css[i + 1] === "/") { depth--; i++; if (depth < 0) break; }
+  }
+  if (depth !== 0) {
+    console.error(`\n[FATAL] ${name} 的 /* */ 注释不闭合（未配对数 ${depth}），后面的规则会被整段吞掉。\n`);
+    process.exit(1);
+  }
+}
+
 // (c) 资源文件名必须全小写：Windows / macOS 默认文件系统【大小写不敏感】，
 //     Linux【大小写敏感】。混用大小写（例如 assets/DeepL.svg）会导致
 //     「本地能打开、Linux 用户装完图标 404」这类只在特定平台复现的问题；

@@ -104,7 +104,7 @@ dbx-plugin-translation/
 ├── PLAN.md                # 实施蓝图（功能/技术架构、详设、分阶段任务）
 ├── README.md              # 面向用户的说明 + 架构总览 + RPC 参考 + 发布流程
 ├── LICENSE                # Apache-2.0 全文（商店首次上架强制要求，_buildpkg.js 有闸门）
-├── RELEASE_NOTES.md       # 版本说明（CI 建 Release 时作为 body）
+├── RELEASE_NOTES.md       # 【只写当前版本】的变更说明（Release body）；不累积历史
 ├── manifest.json          # 插件清单（运行时契约）
 ├── dbx-plugin.toml        # 打包配置（后端语言、二进制名、include）
 ├── .dbx-store.json        # 商店元数据（name/permissions 必须与 manifest 一致）
@@ -128,6 +128,7 @@ dbx-plugin-translation/
 │   ├── engine/            # Engine 接口、注册表、schema、HTTP 客户端、错误分类
 │   │   ├── openai/        # OpenAI 兼容（SSE 真流式）
 │   │   ├── localcli/      # 本地 CLI 代理（claude / codex / 自定义）
+│   │   ├── free/          # 内置免费引擎（复用 openai 适配器 + 锁定配置，零字段）
 │   │   ├── deepl/ google/ baidu/ youdao/ aliyun/ tencent/
 │   ├── secret/            # 密钥保护（DPAPI / Keychain / secret-tool / AES-GCM + HKDF）
 │   ├── store/             # SQLite 存储层（engines / secrets / history / prefs / meta）
@@ -721,7 +722,30 @@ var RPC_TIMEOUT = 30000, READY_TIMEOUT = 8000, CTX_TIMEOUT = 2500,
 | 翻译页引擎下拉里放不出图标 | 原生 `<select>` 的 `<option>` 由**操作系统绘制**，浏览器不支持在里面放图片/HTML | 需要图标就得**自绘下拉**（`button` + `role="listbox"` 的 `ul`），同时补 `aria-haspopup` / `aria-expanded` / `aria-selected`，别让读屏器失去语义 |
 | 引擎列表的拖拽把手「看得见但拖不动」，也没有任何报错 | 原生 HTML5 DnD（`draggable` + `dragstart`）在宿主的 **sandbox iframe** 里不触发 | 改用**指针事件**自己实现：`pointerdown/move/up` + 按 `clientY` 命中卡片实时插入 DOM，松手时读 DOM 顺序提交。凡是「沙箱里点了没反应」的功能，先怀疑浏览器原生能力在 opaque origin iframe 中被削掉 |
 | 改了「默认引擎置顶」的排序契约，`TestReorderEngines` 立刻 FAIL | **不是实现错，是旧断言钉住了旧契约**（原断言要求 reorder 后 `e2` 第一） | 契约变更要同步改断言，并且**补一步能区分新旧契约的验证**（这里加「换默认引擎再查一次顺序」）：只测一组的话全 0 的 `ord` 也能凑出同样顺序，测试失去区分力 |
+| 点「设为默认」后引擎插队到列表第一位，用户再也控制不了顺序 | 排序写成 `ORDER BY is_default DESC` —— 把「哪台是默认」和「列表怎么排」两件事耦合在一起；再叠上「翻译页下拉必须与列表同序」这条要求，一个动作会连带改掉两处排列 | **顺序只由 `ord` 决定，默认只改标记**（2026-10-29 用户明确要求，推翻旧的「默认永远置顶」）。这条契约在代码里原本有【四处】实现，必须一起改干净：① `ListEngines` 的 `ORDER BY is_default DESC`；② 前端 `orderedEngineList()` 比较器里的 `a.isDefault` 优先；③ 默认引擎的拖拽把手被刻意禁用（`bindGrip` 里 `if (e.isDefault) return` + `drag-disabled` 样式）；④ `commitOrder()` 在写回前把默认引擎 id 硬塞到最前 —— 这一处最隐蔽，表现是「把默认引擎拖到哪都会自己弹回第一位」，用户只会以为拖动功能坏了。凡是「一个概念被多处代码各自实现」的改动，都要先 `grep` 全量定位再动手；断言上用 `SetDefaultEngine` 前后 id 序列必须完全相等来兜住四处中的任何回退 |
+| 内置引擎上线后，新加的用户引擎看起来「排在内置后面」 | 新引擎 `ord` 默认 0，多个 0 靠 `created_at` 决胜，内置记录在首次启动时就创建了，自然在最前 | 保留「ord → created_at → rowid」的决胜链（确定性优先于好看），用户可用把手任意拖动；`EnsureBuiltin` 在已有用户引擎时把内置放到 `max(ord)+1` |
 | 本机 `go test -race` 起不来：`-race requires cgo` | Windows 的 race detector 依赖 cgo，而本项目**必须无 cgo** 才能交叉编译 6 平台 | 本机不跑 `-race`，交给 CI 的 ubuntu job；**不要**为了跑竞态检测在本机开 cgo——那会掩盖真实的构建约束 |
+
+| 新版 GitHub Release 正文挂着**上一个版本**的说明 | `RELEASE_NOTES.md` 采用「累积历史」写法，每次发版只在末尾追加一节，于是每次 Release 都以一大段上一版的完整功能手册开头，真正的增量埋在最后；而且**没有任何闸门校验这个文件**，忘了改就是静默失败 | 改为**只写当前版本**：Release body = 本版增量，历史归档天然存在于 GitHub Releases 页面与 git tag（每个 Release 的 body 就是当时的快照，不可变）。用户向的完整功能手册、安装、已知限制、排查迁到 `README.md` 第 8 节；能力与数据披露 `README.md` 第 7.3 节早就有，不再重复维护。并在 `_buildpkg.js` 加闸门：`RELEASE_NOTES.md` 首行版本号必须等于 `manifest.version` |
+
+| 用户配好第一个官方引擎后，翻译仍走内置免费引擎 | 「首个引擎自动设默认」的判据是 `COUNT(*)=1`，而内置记录从安装起就永久占着一条 → 判据再也不成立；把置位改成条件后又出现**两个默认引擎**（只置位不清别人），并列时按 `ord/created_at` 决胜，更早创建的内置记录继续顶在最前 | 判据改为「非内置记录只有 1 条」，且提升默认时**必须先 `UPDATE … is_default=0` 再置位**。任何「唯一位」语义的标记都要成对写清除+设置，光设置会留下并列 |
+| 内置引擎与用户的 OpenAI 引擎抢同一个并发信号量、语言支持集还拿错 | 内置引擎复用 `openai` 适配器，内层 `Kind()` 返回 `"openai"`；而 kind 同时是**信号量 key** 与**语言映射表索引** | 包装类型必须覆盖 `Kind()`（以及 `SupportedLangs()`）再对外暴露。凡是「复用别人实现」的适配器，都要检查内层实现把 kind/id 用作【路由键】的地方 |
+| 内置端点要求无凭据，但 openai 适配器对非 localhost 一律拒绝空 Key | 校验只认「localhost 可以没 Key」，而公益端点既不需要 Key 也不是 localhost | 加 `noAuth` 内部开关（**不出现在表单字段里**，用户在 UI 上填不出来），而不是给内置引擎塞一个假 Key —— 假 Key 会被当 `Authorization` 头发出去 |
+| 单段上限想设 400 却被夹回 500 | `openai` 的 `maxChars` 校验下限是 500，而内置引擎的服务端 30 秒网关超时要求单段 ≤400（实测 820 字符必 504） | 下限降到 100。教训：**同一份校验的边界值也是契约**，收紧或放宽都要写清为什么；`TestBuild_ConfigClamping` 同步更新 |
+| 「列表数量 = 1」的 e2e 断言在内置引擎上线后失败 | 不是代码错，是**断言钉住了旧形态**（列表原本只会有用户引擎）；而 `list[0]` 也不再必然是用户引擎 | 契约变更后同步改断言，并把新契约本身加进断言（内置记录存在、默认引擎仍置顶、删除内置被拒绝且文案含替代方案）。同时警惕用 `list[0]` 取「我刚建的那条」—— 应按 id 查 |
+| Go 测试里 `res["engines"].([]any)` 恒为 nil，看着像「接口返回空列表」 | `Handle()` 返回的是 **Go 原生结构**（`[]map[string]any`），不是 JSON；断言成 `[]any` 直接失败且没有任何报错 | 断言用具体类型 `[]map[string]any`（沿用仓库既有惯例），或先 `mustJSON()` 再 `json.Unmarshal` 到 `[]any` |
+| 一次性脚本里改了版本号，输出却是旧值 | 脚本先读盘改版本、又为了改描述**再次 read 同一文件**，把上一轮结果覆盖掉；打印的 "OK" 只证明脚本没崩 | 落盘型脚本改完必须**重新读文件复核**（`_bump` 类操作要断言最终三处相等），不能相信「没报错就是改成了」 |
+
+| 引擎下拉的宽度被「当前选中的那一项」钉死，切到长名字就换行撑高列表 | 自绘下拉的菜单写了 `position:absolute; left:0; right:0`（宽度=容器宽），而容器 `.kind-select{flex:1 1 auto}` 处在随内容收缩的 `.engine-picker` 里，于是容器宽=按钮文案宽=**当前选中项的宽度**。CSS 层面看不出问题，只有在「选中短名字 + 存在长名字」的组合下才暴露 | 菜单改成 `left:0; right:auto; min-width:100%`，实际宽度由 `fitDropdownMenu` 按最长选项量出来后夹在「视口右边界」内写 inline width（无条件 `width:max-content` 会被 `overflow:auto` 的容器裁掉或冒出横向滚动条，所以必须量一次）。**两处下拉共用同一个函数**，别各写一份 |
+| 只想改宽度，最后发现真正的痛点是「名称根本没有上限」 | 用户界面里任何「文本长度不可控」的位置，迟早都会以换行/挤压控件的形式爆出来；靠 CSS 截断 + 悬浮看全称只是补救 | 优先定**硬性上限**并前后端同一规则（全角按 2 单位、半角按 1，上限 32 单位 ≈ 16 汉字）。规则必须在两处各自有测试钉住，并用同一张用例表交叉核对（本次用一次性 node 脚本抽出前端实现与 Go 表逐条比对，9 条含混合与边界全一致）—— 否则漂移的表现是「用户没输超长却被保存拒绝」 |
+
+| 「CSS 规则明明写了，界面上一点变化都没有」，而且本地打包、闸门、控制台都不报错 | 按 JS 习惯在 `.css` 里写了 `// 说明`。CSS 没有行注释语法，浏览器做错误恢复时会**连紧随其后的那条规则一起丢弃** —— 我一次丢了两条：省略号那条（长名字继续换行）和选择器宽度区间那条（下拉宽度仍然跟着选中项跑） | 打包闸门新增 CSS 检查：任何以 `//` 开头的行、以及未闭合的 `/*`，一律 `[FATAL]`。这类「只有运行时才暴露」的语法问题必须前置到打包阶段 |
+| 判断「样式没生效」不能只读代码，要量 | 我第一反应是「测量方式错了」（把 `fitDropdownMenu` 改成 `width:max-content` 再量），改完看似合理，但用户的现象没变 | 用无头浏览器（Edge `--headless=new --dump-dom`）把真实的 `styles.css` + 真实 DOM + 从 `storage.js` 里**抽出来的**函数跑一遍，打印「容器宽 / 菜单宽 / 每个选项的行高」，修复前后各跑一次。行高 >40 就是换行了 —— 一次测量直接锁定是 CSS 被吞，而不是 JS 没算 |
+
+| 「行变灰了但拖不动」，松手后顺序不变、也没有任何报错 | `pointermove` / `pointerup` 只挂在 15px 宽的把手 `<span>` 上，指望 `setPointerCapture` 把后续事件重定向过来；而那行 capture 调用写在 `try { ... } catch { /* 忽略 */ }` 里，**失败被静默吞掉**，于是光标一离开把手就再没有事件到达 | 拖动类交互一律把 `move`/`up`/`cancel` 挂到 **window** 上，不依赖捕获（捕获只该当优化，不能当正确性前提）；`catch` 里绝不能什么都不做。用合成事件在真实浏览器里量一次即可证伪：挂在把手上的监听收到 0 次、window 上 2 次 |
+| 拖动中的行显示成灰白半透明，用户以为「把引擎拖成禁用了」 | `.engine-card.dragging { opacity:.45 }` 与「已禁用」行（`is-disabled` 灰字）视觉上几乎一样，而且这个类文件里还写了【两遍】 | 被拖对象要表达「离开原位、正在移动」而不是「变弱」：描边高亮 + 阴影 + 微上浮，**文字保持正常对比度**；另外拖拽期间把被拖行设 `pointer-events:none`（否则命中判定永远命中它自己）、`body.is-reordering` 锁掉文本选择（原生选区会吃掉 pointermove） |
+
+| 「引擎页已经拖好顺序，翻译页的下拉还是老顺序」，而且**没有任何报错** | 拖动走的是**本地乐观更新**路径（`applyReorderIds`），它只改了 `state.engines` 的数组顺序：① 没把新 `ord` 回写进每条记录，而下拉是按 `ord` 排序的 → 排序结果当然是拖之前的顺序；② 没调用 `notifyChanged()`，翻译页压根不知道列表变过。（`loadEngines()` 那条正常路径两件事都做，所以只有「拖完立刻切页」才复现） | 任何「改了共享状态的本地乐观更新」都必须同时做到：**重算所有派生字段**（这里就是 `ord`）+ **向消费方广播**；失败分支还要一并回滚并再次广播，否则前端显示的顺序与库里的 ord 从此分叉，重启插件后顺序会莫名跳回去。新增消费方时先问「它读数组顺序还是读 ord 字段」，两者不一致就是这类 bug 的温床 |
 
 
 **从这些坑里提炼的两条通用规则**（已并入铁律）：

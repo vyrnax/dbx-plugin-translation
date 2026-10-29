@@ -101,8 +101,21 @@ func TestRegistry_SchemasComplete(t *testing.T) {
 		if s.MaxChars <= 0 {
 			t.Errorf("引擎 %q 的 MaxChars = %d，必须为正数（分段器依赖它）", s.Kind, s.MaxChars)
 		}
-		if len(s.Fields) == 0 {
+		// 内置引擎【就是】要零字段 —— 「装好就能用」是它存在的全部理由。
+		// 所以这里给它开一个明确的例外，而不是把断言整体放宽：
+		// 任何非内置引擎如果 schema 没有字段，表单就会是空的，仍然是 bug。
+		if len(s.Fields) == 0 && !s.Builtin {
 			t.Errorf("引擎 %q 的 schema 没有任何字段（表单会是空的）", s.Kind)
+		}
+		if s.Builtin {
+			// 内置引擎的附加约束：不许要求密钥（要求了用户也没地方填），
+			// 必须有说明文案（前端「内置引擎说明」弹框的全部内容来源就是它）。
+			if s.NeedsSecret {
+				t.Errorf("内置引擎 %q 声明了 NeedsSecret，但它没有任何可填字段", s.Kind)
+			}
+			if s.Description == "" || s.DescriptionEn == "" {
+				t.Errorf("内置引擎 %q 缺少中/英说明文案", s.Kind)
+			}
 		}
 
 		secretFields := 0

@@ -65,7 +65,7 @@ const defaultTemperature = 0.3
 const testProbeText = "hello"
 
 func init() {
-	engine.Register(Kind, build, schema())
+	engine.Register(Kind, New, schema())
 }
 
 // Config 是本引擎的配置项（从 engine.Config 解析而来）。
@@ -90,8 +90,12 @@ type engineImpl struct {
 	name   string
 }
 
-// build 是注册到 engine 注册表的工厂函数。
-func build(cfg engine.Config, sec engine.Secrets, opts engine.Options) (engine.Engine, error) {
+// New 是注册到 engine 注册表的工厂函数，【必须导出】：
+// 内置免费引擎（engine/free）复用的就是这份实现 —— 它对接的
+// B站 Index-Translate 走的同样是 OpenAI Chat Completions 协议，
+// SSE 解析、提示词模板、译文清洗、错误分类都已经在包里调通并测过。
+// 不导出就只能再复制一份协议实现，而「两份实现逐渐漂移」正是本项目反复踩过的坑。
+func New(cfg engine.Config, sec engine.Secrets, opts engine.Options) (engine.Engine, error) {
 	endpoint, warning, err := engine.ValidateEndpoint(engine.ConfigString(cfg, "endpoint", ""))
 	if err != nil {
 		return nil, err
@@ -104,20 +108,29 @@ func build(cfg engine.Config, sec engine.Secrets, opts engine.Options) (engine.E
 	if model == "" {
 		return nil, engine.New(engine.KindConfig, "模型名不能为空")
 	}
+	noAuth := engine.ConfigBool(cfg, "noAuth", false)
 	apiKey := engine.SecretValue(sec, "apiKey")
-	if apiKey == "" {
+	if apiKey == "" && !noAuth {
 		// 某些本地服务（Ollama）不需要 Key，因此这里只警告不报错。
 		// 但如果端点不是 localhost，缺 Key 几乎肯定是配置遗漏。
 		if !engine.IsLocalhost(mustHostname(normalized)) {
 			return nil, engine.New(engine.KindConfig, "API Key 不能为空")
 		}
 	}
+	// noAuth 是【内部】开关：本包的 schema 里没有这个字段，用户在表单上填不出来，
+	// 只有内置引擎的锁定配置会带上它。存在的理由：那个公益端点既不需要凭据、
+	// 又不是 localhost —— 没有这个出口就只能塞一个假 Key，
+	// 而假 Key 会被当作 Authorization 头发出去，反而可能被服务端拒绝。
 
 	c := Config{
-		Endpoint:       normalized,
-		Model:          model,
-		TimeoutSecs:    engine.ConfigInt(cfg, "timeoutSecs", engine.DefaultTimeoutSecs, 5, 600),
-		MaxChars:       engine.ConfigInt(cfg, "maxChars", defaultMaxChars, 500, 100000),
+		Endpoint:    normalized,
+		Model:       model,
+		TimeoutSecs: engine.ConfigInt(cfg, "timeoutSecs", engine.DefaultTimeoutSecs, 5, 600),
+		// 下限从 500 降到 100：内置免费引擎的服务端有 30 秒网关硬超时，
+		// 实测单段 820 字符就会 504，安全上限只有 400 —— 原来的 500 下限
+		// 会让它【无法】表达自己真正需要的分段粒度（用户侧同样受益：
+		// 某些小上下文模型本来就只吃得下几百字符）。
+		MaxChars:       engine.ConfigInt(cfg, "maxChars", defaultMaxChars, 100, 100000),
 		Temperature:    configFloat(cfg, "temperature", defaultTemperature, 0, 2),
 		SkipTLSVerify:  engine.ConfigBool(cfg, "skipTlsVerify", false),
 		Concurrency:    engine.ConfigInt(cfg, "concurrency", 1, 1, 4),

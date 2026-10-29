@@ -1058,6 +1058,14 @@ func TestBuild_Validation(t *testing.T) {
 		engine.Secrets{}, engine.Options{}); err == nil {
 		t.Error("非本地端点缺 API Key 应报错")
 	}
+	// noAuth=true 时允许非本地端点无 Key —— 这是内置免费引擎唯一的构造路径。
+	// 必须有测试钉住：这个开关一旦被改动，内置引擎会在启动播种后第一次翻译时才炸，
+	// 而那时用户看到的是「免费翻译服务不可用」，很难联想到是构造校验拦住了。
+	if _, err := engine.Build(Kind,
+		engine.Config{"endpoint": "https://api.example.com", "model": "m", "noAuth": true},
+		engine.Secrets{}, engine.Options{}); err != nil {
+		t.Errorf("noAuth=true 应允许无 Key: %v", err)
+	}
 	// 本地端点可以没有 Key（Ollama 等）
 	if _, err := engine.Build(Kind,
 		engine.Config{"endpoint": "http://127.0.0.1:11434/v1", "model": "qwen"},
@@ -1084,7 +1092,9 @@ func TestBuild_ConfigClamping(t *testing.T) {
 		wantMax int
 		why     string
 	}{
-		{engine.Config{"endpoint": "https://a.com", "model": "m", "maxChars": 10}, 500, "低于下限应夹到 500"},
+		// 下限是 100 而不是过去的 500：内置免费引擎的服务端有 30 秒网关硬超时，
+		// 单段安全上限只有 400 字符，500 的下限会让它【无法】表达自己需要的分段粒度。
+		{engine.Config{"endpoint": "https://a.com", "model": "m", "maxChars": 10}, 100, "低于下限应夹到 100"},
 		{engine.Config{"endpoint": "https://a.com", "model": "m", "maxChars": 99999999}, 100000, "高于上限应夹到 100000"},
 		{engine.Config{"endpoint": "https://a.com", "model": "m", "maxChars": 5000}, 5000, "范围内应保持不变"},
 		{engine.Config{"endpoint": "https://a.com", "model": "m"}, defaultMaxChars, "未设置应用默认值"},
