@@ -81,6 +81,7 @@ import (
 	"github.com/vyrnax/translation/secret"
 	"github.com/vyrnax/translation/store"
 	"github.com/vyrnax/translation/trace"
+	"github.com/vyrnax/translation/wordsplit"
 )
 
 // 必须与 manifest.json 的 id / version 完全一致，否则宿主判定 Sidecar 身份不匹配并丢弃。
@@ -92,7 +93,7 @@ import (
 // 运行时反读保证了「包里的 manifest 说什么版本，侧车就自报什么版本」。
 const (
 	pluginID      = "com.vyrnax.translation"
-	pluginVersion = "0.2.4"
+	pluginVersion = "0.2.5"
 )
 
 // 全局在飞翻译任务上限。
@@ -1032,6 +1033,77 @@ func (p *plugin) mapStoreErr(err error) (any, *RPCError) {
 	return nil, failed(-32002, err)
 }
 
+// autoDirection 在真正翻译前决定要不要「换向」。
+//
+// 解决的问题：目标是中文、用户却贴进来一段中文 —— 引擎（尤其传统机器翻译）
+// 会把原文原样吐回，用户以为插件坏了。IDEA 插件用「含非拉丁字符就译成英文」处理，
+// 这里收紧成「只在语系冲突时换向」，规则见 lang.AutoDirection。
+//
+// 换向后必须再过两道能力校验，否则会撞上下一步的语言支持检查：
+//  1. 新目标语言要该引擎支持；
+//  2. 源语言改成 auto 时，引擎要支持自动检测（不支持就保留用户原来的源语言，只换目标）。
+//
+// 任一不满足 → 放弃换向：宁可不换，也不能塞给引擎一个它不支持的语言组合。
+func (p *plugin) autoDirection(e engine.Engine, sourceLang, targetLang, text string) (string, string, map[string]any) {
+	prefs, _ := p.store.GetPrefs()
+	if !boolArg(prefs, "autoDirectionEnabled", true) {
+		return sourceLang, targetLang, nil
+	}
+	src, dst, detected, changed := lang.AutoDirection(sourceLang, targetLang, text)
+	if !changed {
+		return sourceLang, targetLang, nil
+	}
+	if !lang.Supports(e.Kind(), dst) {
+		trace.Log("方向自适应取消：引擎 %s 不支持目标语言 %s", e.Kind(), dst)
+		return sourceLang, targetLang, nil
+	}
+	if src == lang.Auto && !lang.SupportsAutoSource(e.Kind()) {
+		src = sourceLang // 该引擎不支持自动检测源语言，维持用户原选择
+	}
+	if src != lang.Auto && !lang.Supports(e.Kind(), src) {
+		trace.Log("方向自适应取消：引擎 %s 不支持源语言 %s", e.Kind(), src)
+		return sourceLang, targetLang, nil
+	}
+	// 日志只记语言码，不记原文内容（本插件的披露口径之一）
+	trace.Log("方向自适应: %s→%s 检测=%s ⇒ 改为 %s→%s",
+		sourceLang, targetLang, detected, src, dst)
+	return src, dst, map[string]any{
+		"detected":   detected,
+		"fromSource": sourceLang,
+		"fromTarget": targetLang,
+		"toSource":   src,
+		"toTarget":   dst,
+	}
+}
+
+// prepareSource 按用户偏好决定是否把「标识符形态」的原文拆成空格短语。
+//
+// 返回两个值：送给引擎的文本 + 给前端展示的信息（未处理时为 nil）。
+// 关键约定：
+//   - 界面上、历史里存的都还是【原文】，只有发往引擎的那一份被插入空格；
+//   - 日志【不记录原文与译文内容】（本插件对审核方的披露口径之一），只记形态与长度；
+//   - 默认开启：不拆的话机器翻译引擎多半把 linearGradient 原样吐回来，
+//     用户看到的是「译文和原文一样」，比拆错更糟。
+func (p *plugin) prepareSource(text string, prefs map[string]any) (string, map[string]any) {
+	if !boolArg(prefs, "identifierSplitEnabled", true) {
+		return text, nil
+	}
+	r := wordsplit.Prepare(text)
+	if !r.Applied {
+		return text, nil
+	}
+	trace.Log("标识符拆词 style=%s words=%d 原文=%d字符 送引擎=%d字符",
+		r.Style, len(r.Words), len([]rune(r.Source)), len([]rune(r.Text)))
+	// 界面【刻意不展示】这些内容：分词对用户完全无感知 —— 原文、译文、历史记录都保持原样。
+	// 仍回传 text/words/style，只为诊断与排障时能看清「实际送给引擎的是什么」；
+	// 不回传原文（前端本来就有，复制进事件只会白占负载）。
+	return r.Text, map[string]any{
+		"text":  r.Text,
+		"words": r.Words,
+		"style": r.Style,
+	}
+}
+
 // effectiveChunkDelay 决定分段之间是否等待。
 //
 // 全局偏好 chunkDelayMs（默认 1100ms）的存在理由只有一个：百度/有道免费档是 1 QPS。
@@ -1350,6 +1422,10 @@ func (p *plugin) handleTranslateRun(values map[string]any) (any, *RPCError) {
 		return nil, engineErr(err)
 	}
 
+	// 方向自适应必须在语言支持校验【之前】做：校验要针对实际使用的语言对，
+	// 否则换向后的组合没人检查，出错时给用户的提示也对不上。
+	sourceLang, targetLang, dirInfo := p.autoDirection(e, sourceLang, targetLang, text)
+
 	// 语言支持校验：提前拦截比让上游报「不支持的语言」更友好
 	if !lang.Supports(e.Kind(), targetLang) {
 		return nil, engineErr(engine.Newf(engine.KindUnsupported,
@@ -1373,7 +1449,11 @@ func (p *plugin) handleTranslateRun(values map[string]any) (any, *RPCError) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSecs)*time.Second)
 	defer cancel()
 
-	result, err := p.runChunked(ctx, e, rec, text, sourceLang, targetLang, chunkDelay, nil)
+	// 送引擎的文本可能被拆过词；下面的 recordHistory 用的仍然是原文 text，
+	// 保证「原文不被拆分」这条要求成立。
+	sent, splitInfo := p.prepareSource(text, prefs)
+
+	result, err := p.runChunked(ctx, e, rec, sent, sourceLang, targetLang, chunkDelay, nil)
 	if err != nil {
 		return nil, engineErr(err)
 	}
@@ -1383,7 +1463,7 @@ func (p *plugin) handleTranslateRun(values map[string]any) (any, *RPCError) {
 		trace.Log("写入历史失败（不影响翻译结果）: %v", herr)
 	}
 
-	return map[string]any{
+	out := map[string]any{
 		"ok":           true,
 		"target":       result.Target,
 		"elapsedMs":    result.ElapsedMs,
@@ -1392,7 +1472,17 @@ func (p *plugin) handleTranslateRun(values map[string]any) (any, *RPCError) {
 		"model":        result.Model,
 		"detectedLang": result.DetectedLang,
 		"chunks":       result.Chunks,
-	}, nil
+	}
+	if splitInfo != nil {
+		// 只在真的拆过时才带这个字段，省得前端每次判空
+		out["split"] = splitInfo
+	}
+	if dirInfo != nil {
+		// 换向是【用户可见】的状态变化（目标语言会跟着变），
+		// 所以必须回传，前端据此同步下拉框并解释原因
+		out["direction"] = dirInfo
+	}
+	return out, nil
 }
 
 // maxRequestTextBytes 是单次请求文本的字节上限。
@@ -1658,6 +1748,10 @@ func (p *plugin) handleTranslateStart(values map[string]any, emitter *dbxplugins
 	if err != nil {
 		return nil, engineErr(err)
 	}
+
+	// 方向自适应必须在语言支持校验【之前】做：校验要针对实际使用的语言对，
+	// 否则换向后的组合没人检查，出错时给用户的提示也对不上。
+	sourceLang, targetLang, dirInfo := p.autoDirection(e, sourceLang, targetLang, text)
 	if !lang.Supports(e.Kind(), targetLang) {
 		return nil, engineErr(engine.Newf(engine.KindUnsupported,
 			"引擎「%s」不支持目标语言 %s", rec.Name, lang.ZhName(targetLang)))
@@ -1688,7 +1782,10 @@ func (p *plugin) handleTranslateStart(values map[string]any, emitter *dbxplugins
 	trace.Log("translate/start taskId=%s engine=%s kind=%s chars=%d stream=%v",
 		taskID, rec.Name, e.Kind(), len([]rune(text)), wantStream)
 
-	go p.runTask(ctx, taskID, e, rec, text, sourceLang, targetLang, chunkDelay, wantStream, emitter)
+	// 送引擎的文本可能被拆过词；recordHistory 仍写原文（见 runTask 参数命名）
+	sent, splitInfo := p.prepareSource(text, prefs)
+
+	go p.runTask(ctx, taskID, e, rec, text, sent, sourceLang, targetLang, chunkDelay, wantStream, splitInfo, dirInfo, emitter)
 
 	return map[string]any{"ok": true, "taskId": taskID}, nil
 }
@@ -1702,9 +1799,16 @@ func (p *plugin) runTask(
 	taskID string,
 	e engine.Engine,
 	rec store.Engine,
-	text, sourceLang, targetLang string,
+	// sourceText 是用户输入的原文（写历史用它）；
+	// sentText 是实际送引擎的文本（标识符预处理后可能不同）。
+	// 两个都传进来，是为了让「原文不被拆分」这件事在签名上就是显式的，
+	// 不依赖调用方记得用哪个变量。
+	sourceText, sentText string,
+	sourceLang, targetLang string,
 	chunkDelayMs int,
 	wantStream bool,
+	splitInfo map[string]any,
+	dirInfo map[string]any,
 	emitter *dbxpluginsdk.Emitter,
 ) {
 	defer func() {
@@ -1738,11 +1842,11 @@ func (p *plugin) runTask(
 		err    error
 	)
 	if wantStream {
-		result, err = p.runChunked(ctx, e, rec, text, sourceLang, targetLang, chunkDelayMs, emit)
+		result, err = p.runChunked(ctx, e, rec, sentText, sourceLang, targetLang, chunkDelayMs, emit)
 	} else {
 		// 非流式：一次性翻译，然后把完整结果作为单个 chunk 推送。
 		// 前端代码路径与真流式一致，不需要分支。
-		result, err = p.runChunked(ctx, e, rec, text, sourceLang, targetLang, chunkDelayMs, nil)
+		result, err = p.runChunked(ctx, e, rec, sentText, sourceLang, targetLang, chunkDelayMs, nil)
 		if err == nil {
 			_ = emit(engine.Chunk{Text: result.Target, Index: 0, Total: 1})
 		}
@@ -1755,15 +1859,15 @@ func (p *plugin) runTask(
 		return
 	}
 
-	// 写入历史（失败不影响译文返回）
-	if herr := p.recordHistory(rec, e.Kind(), sourceLang, targetLang, text, result); herr != nil {
+	// 历史存【原文】：拆词只是送给引擎前的一次性变换，不能污染用户的记录
+	if herr := p.recordHistory(rec, e.Kind(), sourceLang, targetLang, sourceText, result); herr != nil {
 		trace.Log("写入历史失败 taskId=%s: %v", taskID, herr)
 	}
 
 	trace.Log("translate 任务完成 taskId=%s elapsed=%dms chunks=%d chars=%d",
 		taskID, result.ElapsedMs, result.Chunks, len([]rune(result.Target)))
 
-	if perr := emitter.Event("translate/end", map[string]any{
+	endData := map[string]any{
 		"taskId":       taskID,
 		"target":       result.Target,
 		"elapsedMs":    result.ElapsedMs,
@@ -1772,7 +1876,16 @@ func (p *plugin) runTask(
 		"model":        result.Model,
 		"detectedLang": result.DetectedLang,
 		"chunks":       result.Chunks,
-	}); perr != nil {
+	}
+	if splitInfo != nil {
+		// 拆词信息只用于诊断：界面对拆词无感知（见 prepareSource 注释）
+		endData["split"] = splitInfo
+	}
+	if dirInfo != nil {
+		// 换向会改变目标语言，前端要同步下拉选择并解释原因，故必须回传
+		endData["direction"] = dirInfo
+	}
+	if perr := emitter.Event("translate/end", endData); perr != nil {
 		trace.Log("translate/end 事件发送失败 taskId=%s: %s", taskID, perr.Message)
 	}
 }

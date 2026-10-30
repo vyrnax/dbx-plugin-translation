@@ -538,3 +538,171 @@ func KnownKinds() []string {
 	}
 	return out
 }
+
+// ---------------------------------------------------------------------------
+// 文字体系检测与「方向自适应」
+// ---------------------------------------------------------------------------
+
+// 文字体系分组。
+//
+// 为什么按「文字体系」而不是按「语言」判：方向自适应要解决的是
+// 「目标是中文、用户却贴进来一段中文」—— 这时引擎（尤其传统 MT）会把原文原样吐回。
+// 而 en/de/fr/es 同属拉丁体系，把 Bonjour 译成英文是正常需求，不该被当成冲突。
+// 用体系分组判冲突，误伤面比 IDEA 插件那条
+// 「含非拉丁字符就一律译成英文」更小（后者对目标已是 en 的拉丁文本反而不生效）。
+const (
+	ScriptLatin      = "latin"
+	ScriptHan        = "han" // 汉字（中日共用，故日语靠假名单独判）
+	ScriptKana       = "kana"
+	ScriptHangul     = "hangul"
+	ScriptCyrillic   = "cyrillic"
+	ScriptArabic     = "arabic"
+	ScriptHebrew     = "hebrew"
+	ScriptThai       = "thai"
+	ScriptDevanagari = "devanagari"
+	ScriptGreek      = "greek"
+)
+
+// scripts 是规范语言码 → 文字体系；未列出的按拉丁处理
+// （fr/de/es/pt/it/vi/id/ms/tr/pl/nl/sv/da/fi/no/cs/ro/hu 都用拉丁字母）。
+var scripts = map[string]string{
+	"zh":    ScriptHan,
+	"zh-TW": ScriptHan,
+	"ja":    ScriptKana,
+	"ko":    ScriptHangul,
+	"ru":    ScriptCyrillic,
+	"uk":    ScriptCyrillic,
+	"ar":    ScriptArabic,
+	"he":    ScriptHebrew,
+	"th":    ScriptThai,
+	"hi":    ScriptDevanagari,
+	"el":    ScriptGreek,
+	"auto":  "",
+}
+
+// Script 返回规范语言码的文字体系；未知码按拉丁处理。
+func Script(code string) string {
+	if s, ok := scripts[code]; ok {
+		return s
+	}
+	return ScriptLatin
+}
+
+// scriptOf 判定单个字符属于哪个体系；返回空串表示不参与统计。
+//
+// 数字、标点、空格不参与 —— 一条 SQL、一段 JSON 的体系应由其中的字母决定，
+// 否则 `id` 这种带下划线的标识符会被无关字符带偏。
+func scriptOf(r rune) string {
+	switch {
+	case r >= 0x3040 && r <= 0x30FF: // 平假名、片假名
+		return ScriptKana
+	case r >= 0x3130 && r <= 0x318F, r >= 0xA960 && r <= 0xA97F,
+		r >= 0xAC00 && r <= 0xD7A3: // 谚文
+		return ScriptHangul
+	case r >= 0x3400 && r <= 0x4DBF, r >= 0x4E00 && r <= 0x9FFF,
+		r >= 0xF900 && r <= 0xFAFF: // 汉字
+		return ScriptHan
+	case r >= 0x0400 && r <= 0x04FF:
+		return ScriptCyrillic
+	case r >= 0x0600 && r <= 0x06FF:
+		return ScriptArabic
+	case r >= 0x0590 && r <= 0x05FF:
+		return ScriptHebrew
+	case r >= 0x0E00 && r <= 0x0E7F:
+		return ScriptThai
+	case r >= 0x0900 && r <= 0x097F:
+		return ScriptDevanagari
+	case r >= 0x0370 && r <= 0x03FF:
+		return ScriptGreek
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z',
+		r >= 0x00C0 && r <= 0x024F: // 拉丁扩展：é ñ ü ş …
+		return ScriptLatin
+	default:
+		return ""
+	}
+}
+
+// scriptLang 把体系映射回一个代表语言码。
+//
+// 注意这只是「代表」：han→zh 分不清简繁，cyrillic→ru 分不清俄乌。
+// 所以换向时源语言交给 auto 让引擎自己判，只有目标语言用这个映射。
+var scriptLang = map[string]string{
+	ScriptHan:        "zh",
+	ScriptKana:       "ja",
+	ScriptHangul:     "ko",
+	ScriptCyrillic:   "ru",
+	ScriptArabic:     "ar",
+	ScriptHebrew:     "he",
+	ScriptThai:       "th",
+	ScriptDevanagari: "hi",
+	ScriptGreek:      "el",
+	ScriptLatin:      "en",
+}
+
+// Detect 判断文本的主要文字体系，返回对应的代表语言码。
+//
+// 门槛刻意收紧：至少 2 个可归类字符，且该体系占多数（≥一半）。
+// 因为返回值会被拿去【改变翻译方向】，误判比不判更糟。
+func Detect(text string) (string, bool) {
+	counts := map[string]int{}
+	total := 0
+	for _, r := range text {
+		s := scriptOf(r)
+		if s == "" {
+			continue
+		}
+		counts[s]++
+		total++
+	}
+	if total < 2 {
+		return "", false
+	}
+	best, bestN := "", 0
+	// 固定顺序遍历，不用 map 迭代序：否则同样输入两次判定可能不同（不可重现）
+	for _, s := range []string{
+		ScriptHan, ScriptKana, ScriptHangul, ScriptCyrillic, ScriptArabic,
+		ScriptHebrew, ScriptThai, ScriptDevanagari, ScriptGreek, ScriptLatin,
+	} {
+		if n := counts[s]; n > bestN {
+			best, bestN = s, n
+		}
+	}
+	if best == "" || bestN*2 < total {
+		return "", false
+	}
+	l, ok := scriptLang[best]
+	return l, ok
+}
+
+// AutoDirection 计算方向自适应后的源/目标语言。
+//
+// 规则：
+//   - 原文语系 ≠ 目标语言语系 → 一律不动（本来就该这么译）
+//   - 语系冲突（目标中文、贴进来的是中文）→ 换目标语言，并把源语言交给 auto：
+//     若用户设了「源=英 目标=中」而贴进中文，只换目标会凑出「英→英」的荒唐组合，
+//     传统 MT 引擎喂进去必然出错
+//
+// 新目标的选择：优先用用户设定的源语言（只要它与原文不同语系）；
+// 否则拉丁原文换成中文、非拉丁原文换成英文（后者与 IDEA 插件行为一致）。
+func AutoDirection(sourceLang, targetLang, text string) (src, dst, detected string, changed bool) {
+	detected, ok := Detect(text)
+	if !ok {
+		return sourceLang, targetLang, "", false
+	}
+	if Script(detected) != Script(targetLang) {
+		return sourceLang, targetLang, detected, false
+	}
+	next := ""
+	switch {
+	case sourceLang != Auto && sourceLang != "" && Script(sourceLang) != Script(detected):
+		next = sourceLang
+	case Script(detected) == ScriptLatin:
+		next = "zh"
+	default:
+		next = "en"
+	}
+	if next == "" || next == targetLang {
+		return sourceLang, targetLang, detected, false
+	}
+	return Auto, next, detected, true
+}

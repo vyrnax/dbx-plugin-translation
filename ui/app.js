@@ -903,8 +903,41 @@
     if (wrap) { wrap.scrollTop = wrap.scrollHeight; }
   }
 
+  // applyDirection 把侧车「方向自适应」的结果落到界面上。
+  //
+  // 为什么要动下拉框：用户设的是 中→英，贴进来一段中文时侧车会换成 英→中（或反向）。
+  // 只悄悄换而不显示，用户会以为「目标语言选错了」；把下拉同步过去，
+  // 界面说的就是实际发生的事（IDEA 插件也是这么做的）。
+  //
+  // 【只改本次会话的选择，不写 prefs.defaultSourceLang/defaultTargetLang】：
+  // 用户设置的默认方向不该被一次输入悄悄改掉。
+  function applyDirection(d) {
+    if (!d || !d.toTarget) { return; }
+    if (d.toSource === d.fromSource && d.toTarget === d.fromTarget) { return; }
+    state.sourceLang = d.toSource;
+    state.targetLang = d.toTarget;
+    setVal("sel-source-lang", d.toSource);
+    setVal("sel-target-lang", d.toTarget);
+    var msg = t("directionSwapped")
+      .replace("{detected}", langLabel(d.detected))
+      .replace("{from}", langLabel(d.toSource === "auto" ? d.detected : d.toSource))
+      .replace("{to}", langLabel(d.toTarget));
+    setHint(msg, "");
+  }
+
+  // langLabel 取语言码的界面显示名；查不到就退回码本身，不抛错。
+  function langLabel(code) {
+    if (!code) { return ""; }
+    var langs = (E && E.languages) ? E.languages() : [];
+    for (var i = 0; i < langs.length; i++) {
+      if (langs[i].code === code) { return isZh() ? langs[i].zh : langs[i].en; }
+    }
+    return code;
+  }
+
   function showMeta(res) {
     if (!res) { return; }
+    applyDirection(res.direction);
     var parts = [];
     if (res.elapsedMs) { parts.push(res.elapsedMs + " ms"); }
     if (res.chunks && res.chunks > 1) { parts.push(res.chunks + " 段"); }
@@ -982,6 +1015,10 @@
     setVal("set-instant-minchars", state.prefs.instantMinChars || 2);
     setVal("set-instant-maxlength", state.prefs.instantMaxLength || 2000);
     setChecked("set-stream-enabled", state.prefs.streamEnabled !== false);
+    // 缺省即开启：不拆词时机器翻译多半原样吐回，那才是更糟的默认
+    setChecked("set-identifier-split", state.prefs.identifierSplitEnabled !== false);
+    // 缺省即开启：目标语系和原文撞车时，不换向的结果就是「译文=原文」
+    setChecked("set-auto-direction", state.prefs.autoDirectionEnabled !== false);
     setVal("set-chunk-delay", state.prefs.chunkDelayMs === undefined ? 1100 : state.prefs.chunkDelayMs);
     setVal("set-history-limit", state.prefs.historyLimit || 500);
     setVal("set-default-source", state.prefs.defaultSourceLang || "auto");
@@ -998,6 +1035,8 @@
       instantMinChars: Number(val("set-instant-minchars")) || 2,
       instantMaxLength: Number(val("set-instant-maxlength")) || 2000,
       streamEnabled: isChecked("set-stream-enabled"),
+      identifierSplitEnabled: isChecked("set-identifier-split"),
+      autoDirectionEnabled: isChecked("set-auto-direction"),
       chunkDelayMs: Number(val("set-chunk-delay")) || 0,
       historyLimit: Number(val("set-history-limit")) || 500,
       defaultSourceLang: val("set-default-source") || "auto",

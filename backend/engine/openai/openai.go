@@ -270,7 +270,8 @@ const defaultSystemPrompt = `你是一个专业的翻译引擎。请把用户提
 4. 完整保留占位符（如 {name}、%s、%d、${var}）与代码标识符，不要翻译它们。
 5. 代码块（` + "```" + ` 围栏内）与行内代码（` + "`" + ` 包裹）的内容保持原样，不要翻译。
 6. 专有名词、产品名、API 名称保持原文。
-7. 如果原文已经是{targetLang}，直接原样输出。`
+7. 如果原文已经是{targetLang}，直接原样输出。
+8. 保留原文的大小写：全大写词（如 US、ID、HTTP、JSON）往往是语义的一部分（US=美国、us=我们；ID=标识、it=它），不要擅自改成小写或展开成全称。`
 
 // buildMessages 构造对话消息。
 func (e *engineImpl) buildMessages(r engine.Request) []chatMessage {

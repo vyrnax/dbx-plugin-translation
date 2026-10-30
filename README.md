@@ -135,6 +135,9 @@ dbx-plugin-translation/
 | `data/export` | `includeSecrets?` | `{ok, fileName, dataBase64, bytes, counts, hasSecrets}` |
 | `data/import` | `dataBase64, mode` | `{ok, counts, rev, mode}` |
 
+> **`translate/run` 与 `translate/end` 事件在做过标识符拆词时会带 `split:{text,words,style}`。**
+> 界面刻意不显示它 —— 拆词对用户无感知，该字段只用于诊断与排障（看清实际送给引擎的文本）。
+
 ### 3.1 侧车事件（需 `host.events` 权限）
 
 ```
@@ -431,6 +434,10 @@ tag 一推，`.github/workflows/release.yml` 就会：
 「配额用尽」「限流」）。支持设为默认、启用/禁用、拖拽排序、删除（连带清除密钥）。
 
 引擎名称有硬性长度上限（约 16 个汉字 / 32 个字母；全角字符按 2 个宽度单位计，上限 32 单位）：输入框实时限长，侧车 `engines/save` 再校验一次以挡住手工调用与旧备份导入。有了这个上限，下拉与列表里的名称必然放得下，不需要「省略号 + 悬浮看全称」的补救。
+
+**标识符自动分词** —— 输入 `linearGradient`、`request_method`、`LOGIN_TIME` 这类字段名/变量名时，送进引擎前自动拆成空格短语（`linear gradient`），否则传统机器翻译引擎多半把整串原样吐回。拆分只作用于发往引擎的那一份数据：原文、译文、历史记录都保持用户输入的原样，全程无感知。规则参照 IDEA 插件 TranslationPlugin 的 `CamelCaseSplitter`，并做两处改进（数字附着于前一词：`utf8Encoder → utf8 encoder`；分隔符不产出空词）。大小写按语义处理：全大写词不降级、拆不出多词就一个字不动，因此 `US`（美国）与 `us`（我们）的译文差异被保留。见 `backend/wordsplit/`。
+
+**方向自适应** —— 目标是中文、却贴进来一段中文时（传统 MT 会把原文原样吐回），按「文字体系」判定冲突并自动反向翻译，目标语言下拉同步跟随。规则比 IDEA 插件的「含非拉丁字符一律译成英文」更保守：只在语系与目标语言撞车时才换向，且换向时把源语言交给 auto，避免出现「英→英」的组合。见 `lang.Detect` / `lang.AutoDirection`。
 
 **顺序与默认是两件独立的事** —— 列表顺序只由你按住行首把手拖动决定，「设为默认」只改标记、不插队；翻译页的引擎下拉与引擎列表始终同序。
 

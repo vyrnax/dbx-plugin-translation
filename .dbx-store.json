@@ -17,7 +17,7 @@
   "source": "https://github.com/vyrnax/dbx-plugin-translation",
   "homepage": "https://github.com/vyrnax/dbx-plugin-translation",
   "license": "Apache-2.0",
-  "releaseNotes": "0.2.4：\n1、新增内置「免费翻译服务」引擎\n2、引擎列表支持拖动排序\n3、「设为默认」不再插队\n4、翻译页下拉与列表同序\n5、下拉只列启用中的引擎\n6、首个官方引擎自动设为默认\n7、引擎名称增加长度上限\n8、修复下拉宽度锁死导致换行\n提示：用内置免费引擎时原文会发往该公益端点。",
+  "releaseNotes": "0.2.5：\n1、新增标识符自动分词\n2、字段名/变量名不再被机器翻译原样吐回\n3、原文、译文与历史记录一律保持原样，无感知\n4、大小写按语义保留（US≠us，ID≠it）\n5、新增方向自适应：目标是中文而原文也是中文时自动反向翻译\n6、设置页可一键关闭分词与换向",
   "localizations": {
     "en": {
       "name": "Translation",

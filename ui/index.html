@@ -249,6 +249,25 @@
               <input id="set-stream-enabled" type="checkbox" />
             </label>
             <label class="setting-row">
+              <span class="setting-label" data-i18n="identifierSplit">标识符自动分词</span>
+              <input id="set-identifier-split" type="checkbox" />
+            </label>
+            <p class="setting-note" data-i18n="identifierSplitNote">
+              翻译 linearGradient、request_method、LOGIN_TIME 这类字段名/变量名时，
+              送进引擎前会自动拆成空格短语，否则机器翻译引擎常把整串原样吐回。
+              拆分只发生在发往引擎的那一份数据上：原文、译文与历史记录都保持原样，用户无感知；
+              全大写词（如 US、HTTP）一律不动。
+            </p>
+            <label class="setting-row">
+              <span class="setting-label" data-i18n="autoDirection">方向自适应</span>
+              <input id="set-auto-direction" type="checkbox" />
+            </label>
+            <p class="setting-note" data-i18n="autoDirectionNote">
+              默认开启：当原文与目标语言属于同一文字体系时（例如目标是中文、
+              却贴进来一段中文），自动换成反向翻译，避免译文和原文一模一样。
+              换向时目标语言下拉会随之改变并给出提示。
+            </p>
+            <label class="setting-row">
               <span class="setting-label" data-i18n="chunkDelay">分段间隔（毫秒）</span>
               <input id="set-chunk-delay" class="input num" type="number" min="0" max="10000" step="100" />
             </label>

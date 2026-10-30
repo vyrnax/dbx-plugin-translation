@@ -65,6 +65,18 @@ const upstream = http.createServer((req, res) => {
     try { parsed = JSON.parse(body); } catch { /* 忽略 */ }
     const isStream = parsed.stream === true;
 
+    // 记录【实际送给引擎的用户正文】：用于证明标识符拆词只改这一份数据。
+    // openai 适配器在显式指定源语言时会加「源语言：X」前缀，
+    // 这里剥掉前缀只留正文，才能做精确等值断言（若前缀格式变了，
+    // 失败详情里会直接打出真实内容，不会静默放过）。
+    const msgs = Array.isArray(parsed.messages) ? parsed.messages : [];
+    const umsg = msgs.filter((m) => m && m.role === "user").pop();
+    const rawUser = umsg ? String(umsg.content) : "";
+    lastUserText = rawUser.startsWith("源语言：") ? rawUser.slice(rawUser.indexOf("\n\n") + 2) : rawUser;
+    // 大模型的目标语言是写进 system 提示词里的（用自然语言名），因此断言提示词就能证明「实际送引擎的目标语言」
+    const smsg = msgs.filter((m) => m && m.role === "system")[0];
+    lastSystemText = smsg ? String(smsg.content) : "";
+
     if (!isStream) {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
@@ -97,6 +109,8 @@ const upstream = http.createServer((req, res) => {
   });
 });
 let lastAuth = "";
+let lastUserText = "";
+let lastSystemText = "";
 
 /* ================= 侧车进程 ================= */
 
@@ -455,7 +469,111 @@ async function main() {
       check("搜索命中", (replies.get(idSearch).result?.items || []).length > 0);
     }
 
+    // ---------- 10b) 标识符自动分词 ----------
+    console.log("\n=== 10b. 标识符自动分词 ===");
+
+    // 机制本身：送引擎的必须是拆开后的短语
+    lastUserText = "";
+    const idSplit = send(proc, "translate/run", {
+      engineId, text: "linearGradient", sourceLang: "en", targetLang: "zh",
+    });
+    await waitFor(() => replies.has(idSplit), 30000, "拆词 run 响应");
+    const splitRes = replies.get(idSplit).result;
+    check("拆词后翻译成功", splitRes?.ok === true,
+      JSON.stringify(replies.get(idSplit).error || splitRes));
+    check("送引擎的文本已拆成短语", lastUserText === "linear gradient", lastUserText);
+    check("响应带 split 诊断信息（words/text/style）",
+      Array.isArray(splitRes?.split?.words) && splitRes.split.words.length >= 2
+        && splitRes.split.text === "linear gradient" && !!splitRes.split.style,
+      JSON.stringify(splitRes?.split || null));
+
+    // 但界面与历史必须还是用户输入的原文（用户明确要求「无感知」）
+    const idHist2 = send(proc, "history/list", { limit: 8, offset: 0 });
+    await waitFor(() => replies.has(idHist2), 10000, "history 二次响应");
+    const hist2 = replies.get(idHist2).result;
+    check("历史存的是【原文】linearGradient（不是拆词后的）",
+      (hist2?.items || []).some((x) => x.source === "linearGradient"),
+      (hist2?.items || []).map((x) => x.source).join(" / "));
+
+    // 大小写即语义：US / us 这类拆不出多词的输入必须一个字都不动
+    lastUserText = "";
+    const idUS = send(proc, "translate/run", {
+      engineId, text: "US", sourceLang: "en", targetLang: "zh",
+    });
+    await waitFor(() => replies.has(idUS), 30000, "US run 响应");
+    check("US 原样送引擎（不拆、不改大小写）", lastUserText === "US", lastUserText);
+    check("未处理时响应不带 split 字段（缺席而非空对象）",
+      replies.get(idUS).result?.split === undefined,
+      JSON.stringify(replies.get(idUS).result?.split ?? null));
+
+    // 下划线与全大写：拆词但全大写词一律保留
+    lastUserText = "";
+    const idSnake = send(proc, "translate/run", {
+      engineId, text: "LOGIN_TIME", sourceLang: "en", targetLang: "zh",
+    });
+    await waitFor(() => replies.has(idSnake), 30000, "SCREAMING run 响应");
+    check("LOGIN_TIME 拆词但保留全大写", lastUserText === "LOGIN TIME", lastUserText);
+
+    // 开关关掉后必须完全不拆（用户想自己控制时的逃生口）
+    const idOff = send(proc, "prefs/set", { prefs: { identifierSplitEnabled: false }, rev: -1 });
+    await waitFor(() => replies.has(idOff), 10000, "prefs/set 关闭拆词");
+    lastUserText = "";
+    const idOffRun = send(proc, "translate/run", {
+      engineId, text: "request_method", sourceLang: "en", targetLang: "zh",
+    });
+    await waitFor(() => replies.has(idOffRun), 30000, "关闭后 run 响应");
+    check("关掉开关后不再拆词（原样送引擎）", lastUserText === "request_method", lastUserText);
+    const idOn = send(proc, "prefs/set", { prefs: { identifierSplitEnabled: true }, rev: -1 });
+    await waitFor(() => replies.has(idOn), 10000, "prefs/set 恢复拆词");
+
+    // ---------- 10c) 方向自适应 ----------
+    console.log("\n=== 10c. 方向自适应 ===");
+    lastSystemText = "";
+    const idDir = send(proc, "translate/run", {
+      engineId, text: "你好，今天天气怎么样？", sourceLang: "en", targetLang: "zh",
+    });
+    await waitFor(() => replies.has(idDir), 30000, "换向 run 响应");
+    const dirRes = replies.get(idDir).result;
+    check("换向发生（目标 zh 撞上中文原文 → 改为译往 en）",
+      dirRes?.direction?.toTarget === "en" && dirRes.direction.toSource === "auto"
+        && dirRes.direction.detected === "zh",
+      JSON.stringify(dirRes?.direction || null));
+    check("实际送引擎的提示词目标语言已是 English", lastSystemText.includes("English"), lastSystemText.slice(0, 40));
+    check("换向后响应仍带译文（没被换向搞坏）", typeof dirRes?.target === "string" && dirRes.target.length > 0,
+      String(dirRes?.target));
+
+    // 换向后写入历史的必须是【实际使用】的语言对，否则「用这条历史重新翻译」会翻回错误方向
+    const idHist3 = send(proc, "history/list", { limit: 3, offset: 0 });
+    await waitFor(() => replies.has(idHist3), 10000, "history 三次响应");
+    const hist3 = replies.get(idHist3).result;
+    const dirRec = (hist3?.items || []).find((x) => x.source === "你好，今天天气怎么样？");
+    check("历史存原文不变", !!dirRec && dirRec.source === "你好，今天天气怎么样？",
+      JSON.stringify(dirRec ? { source: dirRec.source, dst: dirRec.dstLang } : null));
+    check("历史的语言对记的是实际使用的（dst=en）", dirRec?.dstLang === "en", String(dirRec?.dstLang));
+
+    // 不冲突时必须完全不动：拉丁原文 + 目标中文 = 正常方向
+    const idNo = send(proc, "translate/run", {
+      engineId, text: "hello world", sourceLang: "auto", targetLang: "zh",
+    });
+    await waitFor(() => replies.has(idNo), 30000, "不换向 run 响应");
+    check("语系不冲突时不换向（不带 direction 字段）",
+      replies.get(idNo).result?.direction === undefined,
+      JSON.stringify(replies.get(idNo).result?.direction ?? null));
+
+    // 关掉开关后必须完全不换
+    const idDirOff = send(proc, "prefs/set", { prefs: { autoDirectionEnabled: false }, rev: -1 });
+    await waitFor(() => replies.has(idDirOff), 10000, "prefs/set 关闭换向");
+    const idOff2 = send(proc, "translate/run", {
+      engineId, text: "你好，今天天气怎么样？", sourceLang: "en", targetLang: "zh",
+    });
+    await waitFor(() => replies.has(idOff2), 30000, "关闭换向 run 响应");
+    check("关掉开关后不换向", replies.get(idOff2).result?.direction === undefined,
+      JSON.stringify(replies.get(idOff2).result?.direction ?? null));
+    const idDirOn = send(proc, "prefs/set", { prefs: { autoDirectionEnabled: true }, rev: -1 });
+    await waitFor(() => replies.has(idDirOn), 10000, "prefs/set 恢复换向");
+
     // ---------- 11) 偏好 ----------
+
     console.log("\n=== 11. prefs ===");
     const idPrefs = send(proc, "prefs/set", { prefs: { instantDebounceMs: 900, lastView: "history" }, rev: -1 });
     await waitFor(() => replies.has(idPrefs), 10000, "prefs/set 响应");

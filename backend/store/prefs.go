@@ -27,9 +27,12 @@ var prefKeys = map[string]bool{
 	"instantMinChars":   true,
 	"instantMaxLength":  true,
 	// 流式与分段
-	"streamEnabled":  true,
-	"chunkDelayMs":   true,
-	"maxCharsPerReq": true,
+	"streamEnabled": true,
+	// 标识符自动分词（只影响送引擎的那份数据，原文与历史不动）
+	"identifierSplitEnabled": true,
+	"autoDirectionEnabled":   true,
+	"chunkDelayMs":           true,
+	"maxCharsPerReq":         true,
 	// 历史
 	"historyLimit": true,
 	// 【刻意没有】主题与语言的偏好键。
@@ -50,19 +53,21 @@ var prefKeys = map[string]bool{
 // 这些默认值来自 PLAN.md 第十章「本计划设定的默认值」，
 // 是实现时不需要再决策的既定参数。
 var PrefDefaults = map[string]any{
-	"sidebarCollapsed":  false,
-	"lastView":          "translate",
-	"defaultSourceLang": "auto",
-	"defaultTargetLang": "zh",
-	"defaultEngineId":   "",
-	"instantEnabled":    true,
-	"instantDebounceMs": 600, // 范围 200-3000
-	"instantMinChars":   2,
-	"instantMaxLength":  2000, // 超过则不自动翻译，提示手动点击
-	"streamEnabled":     true,
-	"chunkDelayMs":      1100, // 尊重百度/有道免费档 1 QPS
-	"maxCharsPerReq":    20000,
-	"historyLimit":      500, // 范围 100-5000
+	"sidebarCollapsed":       false,
+	"lastView":               "translate",
+	"defaultSourceLang":      "auto",
+	"defaultTargetLang":      "zh",
+	"defaultEngineId":        "",
+	"instantEnabled":         true,
+	"instantDebounceMs":      600, // 范围 200-3000
+	"instantMinChars":        2,
+	"instantMaxLength":       2000, // 超过则不自动翻译，提示手动点击
+	"streamEnabled":          true,
+	"identifierSplitEnabled": true, // 默认开：不拆词时机器翻译多半原样吐回
+	"autoDirectionEnabled":   true, // 默认开：目标语系与原文撞车时自动换向
+	"chunkDelayMs":           1100, // 尊重百度/有道免费档 1 QPS
+	"maxCharsPerReq":         20000,
+	"historyLimit":           500, // 范围 100-5000
 }
 
 // GetPrefs 返回全部偏好，缺失的键用默认值补齐。
@@ -177,7 +182,7 @@ func sanitizePrefs(in map[string]any) map[string]any {
 			out[k] = clampInt(v, 500, 100000, 20000)
 		case "historyLimit":
 			out[k] = clampInt(v, 100, 5000, 500)
-		case "instantEnabled", "streamEnabled", "sidebarCollapsed":
+		case "instantEnabled", "streamEnabled", "sidebarCollapsed", "identifierSplitEnabled", "autoDirectionEnabled":
 			if b, ok := v.(bool); ok {
 				out[k] = b
 			}

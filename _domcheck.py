@@ -194,9 +194,55 @@ if 'invoke(method' not in storage and "api.invoke(" not in storage:
 
 print("OK：安全约束检查完成。")
 
+# ---------- ⑥ i18n 键覆盖 ----------
+# 历史坑：info-secret 的「（系统密钥库，真加密）」被硬编码成中文，
+# 切到英文界面仍然显示中文；另一类是键名写错，界面直接显示 "identifierSplit"。
+# 这两种都【只在特定语言下暴露】，中文环境里永远测不出来，所以固化成静态闸门：
+#   a) index.html 里 data-i18n / data-i18n-placeholder 引用的键，两份字典都得有
+#   b) JS 里 t("字面键") 引用的键，两份字典都得有
+i18n_raw = strip_js(read("i18n.js"))
+
+
+def locale_keys(tag):
+    """取某个 locale 块顶层的键集合（按大括号配对截取块内容）。"""
+    m = re.search(r'["\']?%s["\']?\s*:\s*\{' % re.escape(tag), i18n_raw)
+    if not m:
+        return None
+    i, depth = m.end(), 1
+    while i < len(i18n_raw) and depth > 0:
+        if i18n_raw[i] == "{":
+            depth += 1
+        elif i18n_raw[i] == "}":
+            depth -= 1
+        i += 1
+    block = i18n_raw[m.end():i - 1]
+    # 字典项是 6 空格缩进的 `key:`；嵌套块（contributions 等）缩进更深，不会误收
+    return set(re.findall(r"^\s{6}([A-Za-z0-9_]+)\s*:", block, re.M))
+
+
+need = set(re.findall(r'data-i18n(?:-placeholder)?="([^"]+)"', html_live))
+for src in (app, engines, history):
+    need |= set(re.findall(r'\bt\(\s*"([A-Za-z0-9_]+)"', strip_js(src)))
+
+i18n_bad = []
+for tag in ("zh-CN", "en"):
+    kv = locale_keys(tag)
+    if kv is None:
+        i18n_bad.append("i18n.js 里找不到 %s 语言块" % tag)
+        continue
+    miss = sorted(need - kv)
+    if miss:
+        i18n_bad.append("%s 缺 %d 个键: %s" % (tag, len(miss), ", ".join(miss[:12])))
+
+if i18n_bad:
+    for msg in i18n_bad:
+        print("!! i18n 键覆盖：%s" % msg)
+else:
+    print("OK：i18n 键覆盖完整（HTML + t() 引用的 %d 个键在 zh-CN/en 两份字典里都有）。" % len(need))
+
 # ---------- 汇总 ----------
 print()
-if fails or dupes_all or missing:
+if fails or dupes_all or missing or i18n_bad:
     print("RESULT: FAIL")
     sys.exit(1)
 print("RESULT: PASS")
